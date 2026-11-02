@@ -1,0 +1,21 @@
+diff --git a/GXRuntime/src/core/cpu.c b/GXRuntime/src/core/cpu.c
+index 345b960..5a36cf7 100644
+--- a/GXRuntime/src/core/cpu.c
++++ b/GXRuntime/src/core/cpu.c
+@@ -141,6 +141,16 @@ bool ppc_host_call(CPUState* cpu, u32 address) {
+     return cpu->host_call ? cpu->host_call(cpu, address) : false;
+ }
+ 
++// LLVM-backend function entries ask this before running natively. The ModernGekko
++// chassis has no native-region query, so native code may always run (the same
++// thing the C backend does, which never asks).
++bool ppc_native_region_available(CPUState* cpu, u32 start, u32 end) {
++    (void)cpu;
++    (void)start;
++    (void)end;
++    return true;
++}
++
+ void ppc_system_call_exception(CPUState* cpu, u32 cia) {
+     ppc_take_exception(cpu, PPC_EXC_SYSTEM_CALL, PPC_VECTOR_SYSTEM_CALL, cia + 4u, 0);
+ }

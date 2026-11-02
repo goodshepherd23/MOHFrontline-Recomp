@@ -1,0 +1,184 @@
+diff --git a/src/app/cli.c b/src/app/cli.c
+index 63cd6cc..fcf92ff 100644
+--- a/src/app/cli.c
++++ b/src/app/cli.c
+@@ -173,6 +173,14 @@ int parse_cli(int argc, char** argv, CliOptions* opts) {
+     opts->backend = DOLRECOMP_BACKEND_C;
+     opts->jobs = 1;
+     opts->llvm_targets = "host";
++    // Defaults a wrapper (moderngekko-port) can set without a flag of its own;
++    // explicit --semantics / --targets still win.
++    {
++        const char* semantics = getenv("DOLRECOMP_SEMANTICS");
++        if (semantics && ascii_case_equal(semantics, "fast")) opts->fast_semantics = 1;
++        const char* targets = getenv("DOLRECOMP_TARGETS");
++        if (targets && targets[0] && valid_target_set(targets)) opts->llvm_targets = targets;
++    }
+ 
+     for (int i = 1; i < argc; i++) {
+         const char* arg = argv[i];
+diff --git a/src/app/pipeline.c b/src/app/pipeline.c
+index 512d020..415ff41 100644
+--- a/src/app/pipeline.c
++++ b/src/app/pipeline.c
+@@ -1254,6 +1254,40 @@ int emit_code_sections_split(const LoadedCodeSection* sections,
+     FunctionList funcs = {0};
+     SMCAnalysis smc = {0};
+ 
++    // Every chunk entry across all sections, known up front so a `bl` in one
++    // section can call a chunk of another directly (emit_cross_chunk_call).
++    // Chunks tile each section in order and sections are address-sorted DOL
++    // text, so the table comes out sorted. Opt out with
++    // DOLRECOMP_C_DIRECT_CALLS=0.
++    u32* chunk_table = NULL;
++    u32 chunk_table_count = 0;
++    {
++        const char* direct = getenv("DOLRECOMP_C_DIRECT_CALLS");
++        u32 total = 0;
++        for (u32 s = 0; s < section_count; s++)
++            if (sections[s].size && sections[s].data)
++                total += (sections[s].size / 4u + chunk_instructions - 1u) / chunk_instructions;
++        if (!(direct && direct[0] == '0') && total)
++            chunk_table = (u32*)malloc(total * sizeof(u32));
++        for (u32 s = 0; chunk_table && s < section_count; s++) {
++            if (!sections[s].size || !sections[s].data) continue;
++            for (u32 i = 0; i < sections[s].size / 4u; i += chunk_instructions)
++                chunk_table[chunk_table_count++] = sections[s].address + i * 4u;
++        }
++        for (u32 i = 1; i < chunk_table_count; i++) {
++            if (chunk_table[i] <= chunk_table[i - 1u]) {
++                chunk_table_count = 0;  // unsorted input: keep the safe path
++                break;
++            }
++        }
++        emit_set_chunk_table(chunk_table, chunk_table_count);
++        emit_set_fast_fp(options->fast_semantics);
++        if (options->fast_semantics)
++            printf("fast floating point: on (host FP, no FPSCR status)\n");
++        printf("direct cross-chunk calls: %s (%u chunks)\n",
++               chunk_table_count ? "on" : "off", chunk_table_count);
++    }
++
+     for (u32 s = 0; s < section_count; s++) {
+         const LoadedCodeSection* section = &sections[s];
+         if (section->size == 0 || !section->data) continue;
+diff --git a/src/backend/emitter.c b/src/backend/emitter.c
+index 45c3286..1f1733c 100644
+--- a/src/backend/emitter.c
++++ b/src/backend/emitter.c
+@@ -323,6 +323,91 @@ void emit_set_chunk_table(const u32* starts, u32 count) {
+     g_chunk_count = count ? count : 0;
+ }
+ 
++// --semantics fast: arithmetic FP ops become plain host double math (single ops
++// rounded to float and mirrored into ps1, as the hardware does) instead of the
++// exact helpers. FPSCR status/FPRF are not maintained and products are not
++// rounded to 25 bits -- the same trade Dolphin's JIT makes.
++static int g_fast_fp = 0;
++
++void emit_set_fast_fp(int enabled) {
++    g_fast_fp = enabled != 0;
++}
++
++// Emits the fast form of an arithmetic FP op; false means "use the exact helper".
++static bool emit_fast_fp(FILE* out, const PPCInst* inst) {
++    if (!g_fast_fp)
++        return false;
++    const char* expr = NULL;
++    char buf[160];
++    bool single = false;
++    bool negate = false;
++    switch (inst->op) {
++    case PPC_OP_FADDS: single = true; /* fall through */
++    case PPC_OP_FADD:
++        snprintf(buf, sizeof(buf), "ctx->fpr[%u] + ctx->fpr[%u]", inst->rA, inst->rB);
++        expr = buf;
++        break;
++    case PPC_OP_FSUBS: single = true; /* fall through */
++    case PPC_OP_FSUB:
++        snprintf(buf, sizeof(buf), "ctx->fpr[%u] - ctx->fpr[%u]", inst->rA, inst->rB);
++        expr = buf;
++        break;
++    case PPC_OP_FMULS: single = true; /* fall through */
++    case PPC_OP_FMUL:
++        snprintf(buf, sizeof(buf), "ctx->fpr[%u] * ctx->fpr[%u]", inst->rA, inst->rC);
++        expr = buf;
++        break;
++    case PPC_OP_FDIVS: single = true; /* fall through */
++    case PPC_OP_FDIV:
++        snprintf(buf, sizeof(buf), "ctx->fpr[%u] / ctx->fpr[%u]", inst->rA, inst->rB);
++        expr = buf;
++        break;
++    case PPC_OP_FNMADDS: negate = true; /* fall through */
++    case PPC_OP_FMADDS: single = true;
++        snprintf(buf, sizeof(buf), "ctx->fpr[%u] * ctx->fpr[%u] + ctx->fpr[%u]",
++                 inst->rA, inst->rC, inst->rB);
++        expr = buf;
++        break;
++    case PPC_OP_FNMSUBS: negate = true; /* fall through */
++    case PPC_OP_FMSUBS: single = true;
++        snprintf(buf, sizeof(buf), "ctx->fpr[%u] * ctx->fpr[%u] - ctx->fpr[%u]",
++                 inst->rA, inst->rC, inst->rB);
++        expr = buf;
++        break;
++    case PPC_OP_FNMADD: negate = true; /* fall through */
++    case PPC_OP_FMADD:
++        snprintf(buf, sizeof(buf), "ctx->fpr[%u] * ctx->fpr[%u] + ctx->fpr[%u]",
++                 inst->rA, inst->rC, inst->rB);
++        expr = buf;
++        break;
++    case PPC_OP_FNMSUB: negate = true; /* fall through */
++    case PPC_OP_FMSUB:
++        snprintf(buf, sizeof(buf), "ctx->fpr[%u] * ctx->fpr[%u] - ctx->fpr[%u]",
++                 inst->rA, inst->rC, inst->rB);
++        expr = buf;
++        break;
++    case PPC_OP_FRSP:
++        single = true;
++        snprintf(buf, sizeof(buf), "ctx->fpr[%u]", inst->rB);
++        expr = buf;
++        break;
++    default:
++        return false;
++    }
++    fprintf(out, "    {\n");
++    fprintf(out, "        f64 r = %s;\n", expr);
++    if (negate)
++        fprintf(out, "        if (r == r) r = -r;\n");
++    if (single)
++        fprintf(out, "        r = (f64)(f32)r;\n        ctx->fpr[%u] = ctx->ps1[%u] = r;\n",
++                inst->rD, inst->rD);
++    else
++        fprintf(out, "        ctx->fpr[%u] = r;\n", inst->rD);
++    fprintf(out, "    }\n");
++    if (inst->rc) emit_set_cr1_from_fpscr(out);
++    return true;
++}
++
+ // The chunk whose func_<start>() covers `addr`, or 0 if none does. Chunks tile
+ // the text sections but the first one does not start on the common stride, so
+ // this binary-searches rather than dividing.
+@@ -624,6 +709,11 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
+     if (ppc_op_uses_fpu(inst->op))
+         fprintf(out, "    if (!ppc_fp_available_inline(ctx, 0x%08Xu)) return;\n", inst->address);
+ 
++    if (emit_fast_fp(out, inst)) {
++        fprintf(out, "\n");
++        return;
++    }
++
+     switch (inst->op) {
+     case PPC_OP_MULLI:
+         fprintf(out, "    ctx->gpr[%u] = (u32)((s64)(s32)ctx->gpr[%u] * (s64)(s32)%d);\n",
+diff --git a/src/backend/emitter.h b/src/backend/emitter.h
+index 39d8f3c..88d5a56 100644
+--- a/src/backend/emitter.h
++++ b/src/backend/emitter.h
+@@ -22,6 +22,7 @@ void emit_header_for_cpu(FILE* out, DolRecompCPU cpu);
+ // runtime that validates mutable guest code there. Call before worker emission;
+ // passing count == 0 restores the safe return-to-chassis form.
+ void emit_set_chunk_table(const u32* starts, u32 count);
++void emit_set_fast_fp(int enabled);
+ 
+ // emit a single recompiled function as C code
+ bool emit_function(FILE* out, const PPCInst* insts, u32 count, u32 func_addr);

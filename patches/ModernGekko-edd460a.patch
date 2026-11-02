@@ -1,0 +1,91 @@
+diff --git a/src/runtime/dolphin_runtime.cpp b/src/runtime/dolphin_runtime.cpp
+index f9b5405..4c763e2 100644
+--- a/src/runtime/dolphin_runtime.cpp
++++ b/src/runtime/dolphin_runtime.cpp
+@@ -65,7 +65,11 @@ std::string FormatWindowTitle(const std::string &title, double fps) {
+   if (!std::isfinite(fps) || fps < 0.0)
+     fps = 0.0;
+   const auto now = std::chrono::steady_clock::now();
+-  std::string formatted_title = fmt::format("{} | {:.1f} FPS", title, fps);
++  // Local change: also show VI/s and emulation speed. FPS alone can't tell a slow game
++  // from a low-frame-rate movie.
++  const auto &perf = Core::System::GetInstance().GetPerfMetrics();
++  std::string formatted_title = fmt::format("{} | {:.1f} FPS | {:.1f} VPS | {:.0f}%", title, fps,
++                                            perf.GetVPS(), perf.GetSpeed() * 100.0);
+   const NetPlay::InputWaitTelemetry telemetry =
+       NetPlay::NetPlayClient::GetInputWaitTelemetry();
+   if (!telemetry.active) {
+diff --git a/tools/frontend_config.cpp b/tools/frontend_config.cpp
+index 03740d4..af9672e 100644
+--- a/tools/frontend_config.cpp
++++ b/tools/frontend_config.cpp
+@@ -40,6 +40,12 @@ std::string NormalizeGraphicsBackend(std::string value) {
+     return "Vulkan";
+   if (lower == "opengl" || lower == "ogl")
+     return "OGL";
++#ifdef _WIN32
++  // Local change: Dolphin's Direct3D 11 backend is built on Windows. MOH Frontline's
++  // intro movies show column stripes on Vulkan and OpenGL but not on D3D11.
++  if (lower == "d3d" || lower == "d3d11" || lower == "direct3d11")
++    return "D3D";
++#endif
+   return {};
+ }
+ 
+@@ -87,6 +93,9 @@ const std::vector<GraphicsBackendOption> &SupportedGraphicsBackends() {
+   static const std::vector<GraphicsBackendOption> backends = {
+       {"Vulkan", "Vulkan"},
+       {"OpenGL", "OGL"},
++#ifdef _WIN32
++      {"D3D11", "D3D"},
++#endif
+   };
+   return backends;
+ }
+@@ -124,7 +133,7 @@ ConfigResult LoadConfig(const fs::path &user_directory,
+     else if (key == "backend" || key == "graphics_backend") {
+       config.graphics_backend = NormalizeGraphicsBackend(raw_value);
+       if (config.graphics_backend.empty())
+-        return {.error = "graphics backend must be Vulkan or OpenGL"};
++        return {.error = "graphics backend must be Vulkan, OpenGL or D3D11"};
+     }
+     else if (key == "controller")
+       config.controller = raw_value;
+diff --git a/tools/moderngekko_port.cpp b/tools/moderngekko_port.cpp
+index af1c2a5..4b984de 100644
+--- a/tools/moderngekko_port.cpp
++++ b/tools/moderngekko_port.cpp
+@@ -453,11 +453,12 @@ fs::path SiblingExecutable(const char* argv0, std::string name)
+ 
+ std::string DolRecompCodegenIdentity()
+ {
+-  constexpr std::array<const char*, 8> names = {
++  constexpr std::array<const char*, 10> names = {
+       "DOLRECOMP_C_CHUNK_INSTRUCTIONS", "DOLRECOMP_LLVM_CHUNK_INSTRUCTIONS",
+       "DOLRECOMP_LLVM_CPU",             "DOLRECOMP_LLVM_FEATURES",
+       "DOLRECOMP_LLVM_TARGET",          "DOLRECOMP_DISPATCH_LOOKUP",
+-      "DOLRECOMP_UNSAFE_DIRECT_CALLS", "DOLRECOMP_LLVM_WRITE_JOURNAL"};
++      "DOLRECOMP_UNSAFE_DIRECT_CALLS", "DOLRECOMP_LLVM_WRITE_JOURNAL",
++      "DOLRECOMP_SEMANTICS",           "DOLRECOMP_TARGETS"};
+   std::string identity;
+   for (const char* name : names)
+   {
+@@ -971,13 +972,12 @@ int PgoRun(const char* argv0, const fs::path& root, BuildOptions options,
+     for (const std::string& arg : options.runner_arguments)
+       run += " " + Quote(arg);
+     const int status = RunCommandStatus(run);
++    // Local change: a run that crashes during shutdown has often flushed its profile
++    // already, so only warn here; the .profraw check and llvm-profdata merge below still
++    // reject a run that wrote nothing usable.
+     if (status != 0)
+-    {
+-      std::cerr << "\nthe training run exited with status " << status << ".\n"
+-                   "The profiling runtime flushes on a normal shutdown, so a crashed or "
+-                   "killed run has not written a usable profile.\n";
+-      return PgoFailure("training run", workspace);
+-    }
++      std::cerr << "\nwarning: the training run exited with status " << status
++                << "; continuing if it still wrote a profile.\n";
+   }
+ 
+   std::cout << "\n[3/6] Collecting raw profiles\n";
