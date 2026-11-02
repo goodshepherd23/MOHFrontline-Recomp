@@ -114,6 +114,22 @@ static void place_on_fast_cores(HANDLE process) {
     SetProcessInformation(process, ProcessPowerThrottling, &t, sizeof t);
 }
 
+/* The runtime always faults in a window-teardown callback after it has shut down cleanly
+ * (0xC000041D, STATUS_FATAL_USER_CALLBACK_EXCEPTION). Its log then ends with the static
+ * recompiler's "shutdown:" line; only a fault without that line is a real crash. */
+static int clean_shutdown(const wchar_t *log) {
+    FILE *f = _wfopen(log, L"rb");
+    if (!f) return 0;
+    static char buf[1 << 16];
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, size > (long)sizeof buf - 1 ? size - (long)(sizeof buf - 1) : 0, SEEK_SET);
+    size_t n = fread(buf, 1, sizeof buf - 1, f);
+    fclose(f);
+    buf[n] = 0;
+    return strstr(buf, "[staticrecomp] shutdown:") != NULL;
+}
+
 static DWORD g_pid;
 static HWND g_window;
 static BOOL CALLBACK find_window(HWND w, LPARAM lp) {
@@ -174,6 +190,7 @@ static int play(const wchar_t *args) {
     WaitForSingleObject(pi.hProcess, INFINITE);
 
     DWORD code = 1; GetExitCodeProcess(pi.hProcess, &code); CloseHandle(pi.hProcess);
+    if (code == 0xC000041Du && clean_shutdown(log)) code = 0;
     if (code) {
         swprintf(cmd, PATHMAX, L"Medal of Honor: Frontline stopped with an error (exit code 0x%08lX). The details are in\n%ls\n\n"
                                L"If you moved your disc, run MOHFrontline.exe --setup to choose it again.", code, log);
