@@ -1,5 +1,5 @@
 diff --git a/GXRuntime/src/core/cpu.c b/GXRuntime/src/core/cpu.c
-index 345b960..5a36cf7 100644
+index 345b9602dd..5a36cf7fcd 100644
 --- a/GXRuntime/src/core/cpu.c
 +++ b/GXRuntime/src/core/cpu.c
 @@ -141,6 +141,16 @@ bool ppc_host_call(CPUState* cpu, u32 address) {
@@ -19,3 +19,73 @@ index 345b960..5a36cf7 100644
  void ppc_system_call_exception(CPUState* cpu, u32 cia) {
      ppc_take_exception(cpu, PPC_EXC_SYSTEM_CALL, PPC_VECTOR_SYSTEM_CALL, cia + 4u, 0);
  }
+diff --git a/Source/Core/VideoCommon/CommandProcessor.cpp b/Source/Core/VideoCommon/CommandProcessor.cpp
+index 1dbf466f1c..393a109f15 100644
+--- a/Source/Core/VideoCommon/CommandProcessor.cpp
++++ b/Source/Core/VideoCommon/CommandProcessor.cpp
+@@ -368,7 +368,10 @@ void CommandProcessorManager::GatherPipeBursted()
+   }
+   else
+   {
+-    m_fifo.CPWritePointer.fetch_add(GPFifo::GATHER_PIPE_SIZE, std::memory_order_relaxed);
++    // Only the CPU thread writes CPWritePointer, so no locked read-modify-write is needed.
++    m_fifo.CPWritePointer.store(m_fifo.CPWritePointer.load(std::memory_order_relaxed) +
++                                    GPFifo::GATHER_PIPE_SIZE,
++                                std::memory_order_relaxed);
+   }
+ 
+   if (m_cp_ctrl_reg.GPReadEnable && m_cp_ctrl_reg.GPLinkEnable)
+@@ -513,13 +516,16 @@ void CommandProcessorManager::SetCPStatusFromGPU()
+ 
+ void CommandProcessorManager::SetCPStatusFromCPU()
+ {
+-  // overflow & underflow check
+-  m_fifo.bFF_HiWatermark.store(
+-      (m_fifo.CPReadWriteDistance.load(std::memory_order_relaxed) > m_fifo.CPHiWatermark),
+-      std::memory_order_relaxed);
+-  m_fifo.bFF_LoWatermark.store(
+-      (m_fifo.CPReadWriteDistance.load(std::memory_order_relaxed) < m_fifo.CPLoWatermark),
+-      std::memory_order_relaxed);
++  // overflow & underflow check. This runs on every gather pipe burst: only store a watermark
++  // flag when it changes, so the cache line is not dirtied (and pulled away from the GPU
++  // thread) each time.
++  const u32 distance = m_fifo.CPReadWriteDistance.load(std::memory_order_relaxed);
++  const u32 hi = distance > m_fifo.CPHiWatermark;
++  const u32 lo = distance < m_fifo.CPLoWatermark;
++  if (m_fifo.bFF_HiWatermark.load(std::memory_order_relaxed) != hi)
++    m_fifo.bFF_HiWatermark.store(hi, std::memory_order_relaxed);
++  if (m_fifo.bFF_LoWatermark.load(std::memory_order_relaxed) != lo)
++    m_fifo.bFF_LoWatermark.store(lo, std::memory_order_relaxed);
+ 
+   bool bpInt = m_fifo.bFF_Breakpoint.load(std::memory_order_relaxed) &&
+                m_fifo.bFF_BPInt.load(std::memory_order_relaxed);
+diff --git a/Source/Core/VideoCommon/CommandProcessor.h b/Source/Core/VideoCommon/CommandProcessor.h
+index 976592c829..9391abf70d 100644
+--- a/Source/Core/VideoCommon/CommandProcessor.h
++++ b/Source/Core/VideoCommon/CommandProcessor.h
+@@ -31,9 +31,13 @@ struct SCPFifoStruct
+   std::atomic<u32> CPEnd = 0;
+   u32 CPHiWatermark = 0;
+   u32 CPLoWatermark = 0;
+-  std::atomic<u32> CPReadWriteDistance = 0;
+-  std::atomic<u32> CPWritePointer = 0;
+-  std::atomic<u32> CPReadPointer = 0;
++  // The CPU thread (gather pipe bursts) and the GPU thread poll and write these on every
++  // 32-byte burst. Keeping each writer's fields on its own cache line stops the line from
++  // bouncing between the cores on every access (false sharing). DoState is field by field,
++  // so the padding does not change savestates.
++  alignas(64) std::atomic<u32> CPReadWriteDistance = 0;  // CPU adds, GPU subtracts
++  alignas(64) std::atomic<u32> CPWritePointer = 0;       // written by the CPU thread only
++  alignas(64) std::atomic<u32> CPReadPointer = 0;        // written by the GPU thread
+   std::atomic<u32> CPBreakpoint = 0;
+   std::atomic<u32> SafeCPReadPointer = 0;
+ 
+@@ -46,7 +50,7 @@ struct SCPFifoStruct
+   std::atomic<u32> bFF_LoWatermarkInt = 0;
+   std::atomic<u32> bFF_HiWatermarkInt = 0;
+ 
+-  std::atomic<u32> bFF_LoWatermark = 0;
++  alignas(64) std::atomic<u32> bFF_LoWatermark = 0;  // these two: CPU thread
+   std::atomic<u32> bFF_HiWatermark = 0;
+ 
+   void Init();

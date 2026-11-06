@@ -15,6 +15,30 @@ index f9b5405..4c763e2 100644
    const NetPlay::InputWaitTelemetry telemetry =
        NetPlay::NetPlayClient::GetInputWaitTelemetry();
    if (!telemetry.active) {
+diff --git a/src/runtime/mod_loader.cpp b/src/runtime/mod_loader.cpp
+index 4b2345f..679baf5 100644
+--- a/src/runtime/mod_loader.cpp
++++ b/src/runtime/mod_loader.cpp
+@@ -567,6 +567,10 @@ bool ModManager::Dispatch(CPUState *state, std::uint32_t address) {
+     m_impl->runtime_started = true;
+     TriggerEvent("*", "runtime_start", state);
+   }
++  // The static recompiler calls this on every native dispatch (millions a second). With no
++  // hooks, patches or pending returns there is nothing to find, so skip the hash lookups.
++  if (m_impl->hooks.empty() && m_impl->patches.empty() && m_impl->pending_returns.empty())
++    return false;
+   if (!m_impl->pending_returns.empty() &&
+       m_impl->pending_returns.back().address == address &&
+       m_impl->pending_returns.back().stack_pointer == state->gpr[1]) {
+@@ -630,6 +634,8 @@ const std::vector<LoadedModInfo> &ModManager::GetLoadedMods() const {
+ }
+ 
+ bool ModManager::HandlesAddress(std::uint32_t address) const {
++  if (!HasGuestInterception())
++    return false;
+   if (m_impl->patches.contains(address) || m_impl->hooks.contains(address))
+     return true;
+   return std::ranges::any_of(m_impl->pending_returns,
 diff --git a/tools/frontend_config.cpp b/tools/frontend_config.cpp
 index 03740d4..af9672e 100644
 --- a/tools/frontend_config.cpp

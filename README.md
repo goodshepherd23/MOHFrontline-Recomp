@@ -118,11 +118,11 @@ GPL-3.0 (see `LICENSE`), like ModernGekko and DolRecomp. The runtime binaries in
 
 | Project | Commit | Local changes |
 |---|---|---|
-| [ExpansionPak/ModernGekko](https://github.com/ExpansionPak/ModernGekko) | `edd460a` | `patches/ModernGekko-edd460a.patch`: D3D11 backend option, speed in the title bar, PGO run fix |
-| [ExpansionPak/RecompCore](https://github.com/ExpansionPak/RecompCore) (Dolphin fork, `vendor/dolphin`) | `10f7ac4` | `patches/RecompCore-10f7ac4.patch`: `ppc_native_region_available` stub |
+| [ExpansionPak/ModernGekko](https://github.com/ExpansionPak/ModernGekko) | `edd460a` | `patches/ModernGekko-edd460a.patch`: D3D11 backend option, speed in the title bar, PGO run fix, no mod-hook hash lookups when no mods are loaded |
+| [ExpansionPak/RecompCore](https://github.com/ExpansionPak/RecompCore) (Dolphin fork, `vendor/dolphin`) | `10f7ac4` | `patches/RecompCore-10f7ac4.patch`: `ppc_native_region_available` stub, command FIFO fields on separate cache lines (less CPU/GPU thread contention) |
 | [ExpansionPak/DolRecomp](https://github.com/ExpansionPak/DolRecomp) (`vendor/dolphin/DolRecomp`) | `1bec355` | `patches/DolRecomp-1bec355.patch`: direct cross-chunk calls enabled, fast floating point, env defaults |
 
-These were built with Visual Studio 2022 Build Tools. The MSVC runtime DLLs are Microsoft's redistributables.
+These were built with Visual Studio 2026 (MSVC 14.51). The MSVC runtime DLLs are Microsoft's redistributables.
 
 Made with the help of an AI coding assistant. This is a fan project, not affiliated with or endorsed
 by Electronic Arts or Nintendo. You need your own copy of the game.
