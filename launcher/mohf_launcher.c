@@ -186,7 +186,7 @@ static void add_missing_defaults(const wchar_t *src, const wchar_t *dst) {
 /* ------------------------------------------------------------------ settings window */
 
 enum { ID_RES = 100, ID_BACKEND, ID_FULLSCREEN, ID_WIDE, ID_FPS, ID_SKIP, ID_PLAY, ID_QUIT, ID_DISC,
-       ID_REBUILD, ID_OPEN, ID_RESETPAD };
+       ID_REBUILD, ID_OPEN, ID_RESETPAD, ID_AUDIO };
 enum { CHOICE_QUIT, CHOICE_PLAY, CHOICE_DISC, CHOICE_REBUILD };
 
 static const wchar_t *res_values[] = { L"640x528", L"1280x1056", L"1920x1584", L"2560x2112" };
@@ -194,7 +194,7 @@ static const wchar_t *res_names[] = { L"Native (640 x 528), fastest", L"2x (1280
 static const wchar_t *backend_values[] = { L"D3D11", L"Vulkan", L"OpenGL" };
 static const wchar_t *backend_names[] = { L"Direct3D 11 (recommended)", L"Vulkan", L"OpenGL" };
 
-static wchar_t cfg_ini[PATHMAX], gfx_ini[PATHMAX], dolphin_ini[PATHMAX], launcher_ini[PATHMAX];
+static wchar_t cfg_ini[PATHMAX], gfx_ini[PATHMAX], dolphin_ini[PATHMAX], launcher_ini[PATHMAX], game_ini[PATHMAX];
 static int g_choice = CHOICE_QUIT;
 static HFONT g_font;
 static int g_dpi = 96;
@@ -230,6 +230,8 @@ static void load_settings(HWND w) {
     ini_get(gfx_ini, L"Settings", L"AspectRatio", L"1", v, 64);
     check(w, ID_WIDE, wcscmp(v, L"0") != 0 && ini_bool(gfx_ini, L"Settings", L"wideScreenHack", 1));
     check(w, ID_SKIP, ini_bool(launcher_ini, L"Launcher", L"SkipSettings", 0));
+    /* Accurate audio = Dolphin's DSP LLE; HLE drops sound effects in this game. */
+    check(w, ID_AUDIO, !ini_bool(game_ini, L"Core", L"DSPHLE", 0));
 }
 
 static void save_settings(HWND w) {
@@ -243,6 +245,7 @@ static void save_settings(HWND w) {
     WritePrivateProfileStringW(L"Settings", L"AspectRatio", wide ? L"1" : L"0", gfx_ini);
     WritePrivateProfileStringW(L"Settings", L"wideScreenHack", wide ? L"True" : L"False", gfx_ini);
     WritePrivateProfileStringW(L"Launcher", L"SkipSettings", checked(w, ID_SKIP) ? L"1" : L"0", launcher_ini);
+    WritePrivateProfileStringW(L"Core", L"DSPHLE", checked(w, ID_AUDIO) ? L"False" : L"True", game_ini);
 }
 
 /* Puts the kit's default controls back (controller + keyboard and mouse) and locks the mouse
@@ -293,7 +296,7 @@ static int settings_window(void) {
     wc.hIcon = LoadIconW(NULL, IDI_APPLICATION);
     RegisterClassW(&wc);
 
-    RECT r = { 0, 0, S(460), S(372) };
+    RECT r = { 0, 0, S(460), S(396) };
     AdjustWindowRect(&r, WS_CAPTION | WS_SYSMENU, FALSE);
     int ww = r.right - r.left, wh = r.bottom - r.top;
     HWND w = CreateWindowExW(0, wc.lpszClassName, TITLE, WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
@@ -305,7 +308,7 @@ static int settings_window(void) {
     add(w, L"STATIC", where, SS_PATHELLIPSIS | SS_NOPREFIX, 16, 14, 340, 20, -1);
     add(w, L"BUTTON", L"Open folder", BS_PUSHBUTTON | WS_TABSTOP, 364, 10, 80, 26, ID_OPEN);
 
-    add(w, L"BUTTON", L"Video", BS_GROUPBOX, 12, 44, 436, 172, -1);
+    add(w, L"BUTTON", L"Video and sound", BS_GROUPBOX, 12, 44, 436, 196, -1);
     add(w, L"STATIC", L"Resolution:", 0, 28, 72, 110, 20, -1);
     HWND res = add(w, L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_TABSTOP | WS_VSCROLL, 140, 68, 292, 200, ID_RES);
     for (int i = 0; i < 4; i++) SendMessageW(res, CB_ADDSTRING, 0, (LPARAM)res_names[i]);
@@ -315,18 +318,19 @@ static int settings_window(void) {
     add(w, L"BUTTON", L"Fullscreen", BS_AUTOCHECKBOX | WS_TABSTOP, 28, 138, 200, 22, ID_FULLSCREEN);
     add(w, L"BUTTON", L"Widescreen 16:9 (menus are stretched)", BS_AUTOCHECKBOX | WS_TABSTOP, 28, 162, 400, 22, ID_WIDE);
     add(w, L"BUTTON", L"Show speed in the title bar", BS_AUTOCHECKBOX | WS_TABSTOP, 28, 186, 400, 22, ID_FPS);
+    add(w, L"BUTTON", L"Accurate audio (all sound effects; slightly slower)", BS_AUTOCHECKBOX | WS_TABSTOP, 28, 210, 400, 22, ID_AUDIO);
 
-    add(w, L"BUTTON", L"Controls", BS_GROUPBOX, 12, 224, 436, 62, -1);
+    add(w, L"BUTTON", L"Controls", BS_GROUPBOX, 12, 248, 436, 62, -1);
     add(w, L"STATIC", L"Controller, or keyboard and mouse (WASD, mouse look, click to fire). See the README.",
-        0, 28, 244, 300, 36, -1);
-    add(w, L"BUTTON", L"Reset controls", BS_PUSHBUTTON | WS_TABSTOP, 336, 248, 100, 26, ID_RESETPAD);
+        0, 28, 268, 300, 36, -1);
+    add(w, L"BUTTON", L"Reset controls", BS_PUSHBUTTON | WS_TABSTOP, 336, 272, 100, 26, ID_RESETPAD);
 
     add(w, L"BUTTON", L"Don't show this window (hold Shift when starting to see it again)", BS_AUTOCHECKBOX | WS_TABSTOP,
-        16, 294, 430, 22, ID_SKIP);
-    add(w, L"BUTTON", L"Change disc...", BS_PUSHBUTTON | WS_TABSTOP, 12, 330, 100, 30, ID_DISC);
-    add(w, L"BUTTON", L"Rebuild...", BS_PUSHBUTTON | WS_TABSTOP, 118, 330, 84, 30, ID_REBUILD);
-    add(w, L"BUTTON", L"Quit", BS_PUSHBUTTON | WS_TABSTOP, 268, 330, 84, 30, ID_QUIT);
-    HWND play = add(w, L"BUTTON", L"Play", BS_DEFPUSHBUTTON | WS_TABSTOP, 358, 330, 90, 30, ID_PLAY);
+        16, 318, 430, 22, ID_SKIP);
+    add(w, L"BUTTON", L"Change disc...", BS_PUSHBUTTON | WS_TABSTOP, 12, 354, 100, 30, ID_DISC);
+    add(w, L"BUTTON", L"Rebuild...", BS_PUSHBUTTON | WS_TABSTOP, 118, 354, 84, 30, ID_REBUILD);
+    add(w, L"BUTTON", L"Quit", BS_PUSHBUTTON | WS_TABSTOP, 268, 354, 84, 30, ID_QUIT);
+    HWND play = add(w, L"BUTTON", L"Play", BS_DEFPUSHBUTTON | WS_TABSTOP, 358, 354, 90, 30, ID_PLAY);
 
     load_settings(w);
     ShowWindow(w, SW_SHOWNORMAL);
@@ -455,6 +459,7 @@ int WINAPI wWinMain(HINSTANCE a, HINSTANCE b, PWSTR args, int show) {
     if (!find_data()) return 0;
     path(cfg_ini, L"user\\config.ini"); path(gfx_ini, L"user\\Config\\GFX.ini");
     path(dolphin_ini, L"user\\Config\\Dolphin.ini"); path(launcher_ini, L"launcher.ini");
+    path(game_ini, L"user\\GameSettings\\GMFE69.ini");
 
     int shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
     if (wcsstr(args, L"--rebuild")) { if (!run_setup(L"-Rebuild")) return 1; }

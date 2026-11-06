@@ -35,6 +35,7 @@ After that, a settings window opens before each start:
 - **Resolution:** native (fastest) up to 4x.
 - **Graphics:** Direct3D 11 (recommended), Vulkan or OpenGL.
 - **Fullscreen**, **Widescreen** and **Show speed in the title bar**.
+- **Accurate audio:** Dolphin's DSP LLE, on by default. The faster HLE drops sound effects in this game. Untick it for a few percent more speed.
 - **Reset controls:** puts the default controls below back.
 - **Change disc**, **Rebuild** and **Open folder**.
 
@@ -93,9 +94,8 @@ Two choices trade exactness for speed:
 ## Known issues
 
 - **Speed:** see above. It is the main open issue.
-- **Sound:** a player reported missing sound effects. Dolphin's wiki suggests DSP LLE for this game, but LLE
-  produces no sound at all in this runtime, so the kit stays on HLE. The recompiled game's audio matches
-  Dolphin's own JIT in the same runtime. Reports with a description of which sounds are missing help.
+- **Sound:** with Dolphin's faster DSP HLE this game drops sound effects (a player report, and Dolphin's wiki).
+  v0.2.0 uses DSP LLE by default (**Accurate audio** in the settings window), which costs about 5% speed.
 - Menus and the HUD are stretched in widescreen.
 
 ## How it works
