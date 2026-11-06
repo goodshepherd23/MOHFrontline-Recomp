@@ -12,11 +12,11 @@ your disc.
 
 - Windows 10 or 11, 64-bit.
 - **Medal of Honor: Frontline, USA release (GMFE69)**. Either:
-  - a disc image as **.iso** or **.gcm**, or
+  - a disc image as **.iso**, **.gcm** or **.ciso**, or
   - a disc extracted with Dolphin (right-click the game > Properties > Filesystem > Extract Entire Disc).
     Setup then asks for the `files\Moh2RelGC.elf` inside it.
 
-  Other formats (.rvz, .ciso, .gcz, .nkit) must be converted to ISO first: in Dolphin, right-click the
+  Other formats (.rvz, .gcz, .nkit) must be converted to ISO first: in Dolphin, right-click the
   game > Convert File > Format: ISO. Other regions and revisions are refused, because the recompiled
   program and its tuning are for this exact file.
 - About 3 GB of free space (2 GB if you point it at an extracted disc) and an internet connection the
@@ -24,47 +24,63 @@ your disc.
 
 ## Playing
 
-Run `MOHFrontline.exe`. The first run opens a setup window that asks for your disc and builds the
-game. **This takes 30 to 60 minutes** on a laptop and about 15 minutes on a fast desktop. After that,
-the game starts straight away.
+Run `MOHFrontline.exe`. The first run asks where to install the game files (about 3 GB; the default is
+`%LOCALAPPDATA%\MOHFrontline-Recomp`), then opens a setup window that asks for your disc and builds the
+game. **This takes 20 to 60 minutes** depending on your CPU (about 20 minutes on a plugged-in laptop with an
+Intel i7-1355U), and the window shows progress and time estimates. Your disc is only read once. Updates to
+this kit only rebuild the game when the build itself changed.
 
-- `MOHFrontline.exe --setup`: choose another disc.
-- `MOHFrontline.exe --rebuild`: rebuild the game from your disc.
+After that, a settings window opens before each start:
 
-Your settings and saves live in `%LOCALAPPDATA%\MOHFrontline-Recomp`, so updating the app keeps them.
-To keep everything in the app folder instead, put an empty `portable.txt` next to `MOHFrontline.exe`.
+- **Resolution:** native (fastest) up to 4x.
+- **Graphics:** Direct3D 11 (recommended), Vulkan or OpenGL.
+- **Fullscreen**, **Widescreen** and **Show speed in the title bar**.
+- **Reset controls:** puts the default controls below back.
+- **Change disc**, **Rebuild** and **Open folder**.
+
+Tick "Don't show this window" to start straight into the game; hold **Shift** while starting it to get the
+window back. `MOHFrontline.exe --setup` and `--rebuild` still work too.
+
+Your settings and saves stay in the folder you chose, so updating the app keeps them. To keep everything in
+the app folder instead, put an empty `portable.txt` next to `MOHFrontline.exe`.
 
 ### Controls
 
-An Xbox-style (XInput) controller and the keyboard both work out of the box:
+An Xbox-style (XInput) controller and keyboard and mouse both work out of the box. The game is set to its
+**MOH Sharpshooter** layout (choose it when a new game asks):
 
-| GameCube | Controller | Keyboard |
+| Action (GameCube) | Controller | Keyboard and mouse |
 |---|---|---|
-| Move (stick) | Left stick | Arrow keys |
-| Look (C-stick) | Right stick | I J K L |
-| Fire (R) / Aim (L) | Right / left trigger | W / Q |
-| A (action) | A | X |
-| B (melee) | X | Z |
-| X (crouch) / Y (jump) | B / Y | C / S |
-| Z (reload) | Right bumper | D |
-| D-pad (weapons) | D-pad | T F G H |
-| Start | Start | Enter |
+| Move (stick) | Left stick | W A S D (or the arrow keys) |
+| Look (C-stick) | Right stick | Mouse |
+| Fire (R) / Aim (L) | Right / left trigger | Left / right mouse button |
+| Action (A) | A | E (Enter in menus) |
+| Melee (B) | X | F (Backspace goes back in menus) |
+| Crouch (X) / Jump (Y) | B / Y | C or Left Ctrl / Space |
+| Reload (Z) | Right bumper | R |
+| Weapons (D-pad left/right) | D-pad | Mouse wheel, or Z / X |
+| D-pad up / down | D-pad | 1 / 2 |
+| Pause (Start) | Start | Esc |
 
-The mapping is Dolphin's, in `user\Config\GCPadNew.ini` under the data folder.
+The mouse is locked to the game window while it has focus. If you changed the controls in v0.1.0, press
+**Reset controls** in the settings window to get this layout. The mapping is Dolphin's, in
+`user\Config\GCPadNew.ini` in the game folder.
 
 ### Widescreen
 
 The kit turns on Dolphin's widescreen hack, so the 3D view is a true 16:9 picture. Menus and the HUD come out
-stretched sideways, which the hack can't avoid. For the original 4:3 picture, set
-`AspectRatio = 0` and `wideScreenHack = False` in `user\Config\GFX.ini`.
+stretched sideways, which the hack can't avoid. Untick **Widescreen** in the settings window for the original
+4:3 picture.
 
 ## Performance
 
-How fast it runs depends on your CPU's single-core speed. On a 15 W laptop CPU (Intel i7-1355U), menus run at
-full speed, the intro movies at about 70% and missions at roughly **two-thirds speed**. Faster
-desktop CPUs do better. The kit pins the game to your fastest cores and turns off Windows power
-throttling for it. Graphics use Direct3D 11 at the native resolution, because the Vulkan and OpenGL backends
-draw striped movies on Intel Iris Xe. Both settings are in `user\config.ini`.
+How fast it runs depends on your CPU's single-core speed. On a 15 W laptop CPU (Intel i7-1355U), plugged in,
+menus run at full speed and the opening mission at about **70 to 85%**. On battery it is much slower. Faster
+desktop CPUs do better. The kit pins the game to your fastest cores and turns off Windows power throttling
+for it. Direct3D 11 at the native resolution is the fastest setting.
+
+The game's movies use the VP6 codec, which Dolphin draws with vertical stripes unless "Manual Texture
+Sampling" is on. The kit turns it on for this game (`user\GameSettings\GMFE69.ini`).
 
 Two choices trade exactness for speed:
 
@@ -74,9 +90,17 @@ Two choices trade exactness for speed:
 - **Profile-guided optimization:** the shipped profile (`kit\profile`) was recorded in the first mission. It
   makes the compiled game about 20% faster.
 
+## Known issues
+
+- **Speed:** see above. It is the main open issue.
+- **Sound:** a player reported missing sound effects. Dolphin's wiki suggests DSP LLE for this game, but LLE
+  produces no sound at all in this runtime, so the kit stays on HLE. The recompiled game's audio matches
+  Dolphin's own JIT in the same runtime. Reports with a description of which sounds are missing help.
+- Menus and the HUD are stretched in widescreen.
+
 ## How it works
 
-1. Setup checks the disc ID (GMFE69) and the SHA-256 of `files\Moh2RelGC.elf`, the real game program.
+1. Setup unpacks a CISO to a temporary ISO if needed, extracts the disc, then checks the disc ID (GMFE69) and the SHA-256 of `files\Moh2RelGC.elf`, the real game program.
    The disc's `main.dol` is only a boot stub.
 2. `kit\elf2dol.py` converts that ELF into the DOL the recompiler reads.
 3. `runtime\dolrecomp.exe` translates the DOL into about 90 MB of C.

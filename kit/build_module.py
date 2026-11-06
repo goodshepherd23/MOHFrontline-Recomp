@@ -15,6 +15,7 @@ import concurrent.futures
 import glob
 import os
 import subprocess
+import time
 import sys
 
 CORE = ["cpu.c", "cpu_exception.c", "cpu_interpreter.c", "cpu_interpreter_table.c",
@@ -63,7 +64,13 @@ def main():
                            capture_output=True, text=True)
         return obj, (r.stderr if r.returncode else None)
 
+    start = time.time()
+
+    def clock(seconds):
+        return "%d:%02d" % (seconds // 60, seconds % 60)
+
     objs, done = [], 0
+    print("  step 1 of 2: compiling %d files" % len(sources), flush=True)
     with concurrent.futures.ThreadPoolExecutor(max(1, a.j)) as pool:
         for obj, err in pool.map(compile_one, sources):
             if err:
@@ -71,18 +78,31 @@ def main():
             objs.append(obj)
             done += 1
             if done % 10 == 0 or done == len(sources):
-                print("  compiled %d/%d" % (done, len(sources)), flush=True)
+                spent = time.time() - start
+                left = spent / done * (len(sources) - done)
+                print("  compiled %d/%d  (%s so far, about %s left in this step)"
+                      % (done, len(sources), clock(spent), clock(left)), flush=True)
 
     rsp = "obj/link.rsp"
     with open(rsp, "w") as f:
         f.write("\n".join(objs) + "\n")
     out = os.path.abspath(a.out)
-    print("  linking (ThinLTO, a few minutes)", flush=True)
-    r = subprocess.run([clang, "-O3", "-flto=thin", *pgo, "-shared", "-o", out,
-                        "-Wl,--thinlto-jobs=%d" % max(1, a.j), "@" + rsp])
-    if r.returncode or not os.path.exists(out):
+    # The ThinLTO link does the real optimization, so it is the long step. Print a heartbeat so a
+    # quiet window never looks hung.
+    print("  step 2 of 2: optimizing and linking (the longest step; usually 1 to 3 times step 1)", flush=True)
+    link_start = time.time()
+    p = subprocess.Popen([clang, "-O3", "-flto=thin", *pgo, "-shared", "-o", out,
+                          "-Wl,--thinlto-jobs=%d" % max(1, a.j), "@" + rsp])
+    while True:
+        try:
+            p.wait(60)
+            break
+        except subprocess.TimeoutExpired:
+            print("  still optimizing... %s in this step, %s in total"
+                  % (clock(time.time() - link_start), clock(time.time() - start)), flush=True)
+    if p.returncode or not os.path.exists(out):
         raise SystemExit("link failed")
-    print("  built " + out, flush=True)
+    print("  built %s in %s" % (out, clock(time.time() - start)), flush=True)
 
 
 if __name__ == "__main__":

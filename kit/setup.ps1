@@ -23,6 +23,8 @@ if (-not $Data) { $Data = $Root }
 New-Item -ItemType Directory -Force -Path $Data | Out-Null
 $Data = (Resolve-Path -LiteralPath $Data).Path
 $KitVersion = (Get-Content -LiteralPath "$Root\kit\kit-version.txt" -Raw).Trim()   # not version.txt: Quiver owns that file
+# The build inputs' version: kit updates that keep it do not rebuild the game.
+$BuildVersion = (Get-Content -LiteralPath "$Root\kit\build-version.txt" -Raw).Trim()
 
 # Downloads are pinned and must match their SHA-256.
 $Pins = @{
@@ -101,17 +103,18 @@ foreach ($f in "$runtime\moderngekko-run.exe", "$runtime\dolrecomp.exe", "$kit\b
 
 # ---------------------------------------------------------------- disc
 Step 'Your Medal of Honor: Frontline disc'
+$python = "$(Get-Pinned 'python')\python.exe"
 $discFile = "$Data\disc.txt"
 if (-not $Disc -and (Test-Path -LiteralPath $discFile)) {
     $saved = (Get-Content -LiteralPath $discFile -Raw).Trim()
     if ($saved -and (Test-Path -LiteralPath $saved)) { $Disc = $saved }
 }
 if (-not $Disc) {
-    Write-Host 'Choose your Medal of Honor: Frontline (USA) disc image (.iso / .gcm),'
+    Write-Host 'Choose your Medal of Honor: Frontline (USA) disc image (.iso / .gcm / .ciso),'
     Write-Host 'or, for a disc extracted with Dolphin, the files\Moh2RelGC.elf inside it.'
-    Write-Host '(Other formats such as .rvz or .ciso: convert to ISO first in Dolphin, see README.)'
+    Write-Host '(.rvz, .gcz or .nkit: convert to ISO first in Dolphin, see README.)'
     $Disc = Pick-File 'Choose your Medal of Honor: Frontline disc' `
-        'GameCube disc image (*.iso;*.gcm)|*.iso;*.gcm|Extracted disc program (Moh2RelGC.elf)|Moh2RelGC.elf'
+        'GameCube disc image (*.iso;*.gcm;*.ciso)|*.iso;*.gcm;*.ciso|Extracted disc program (Moh2RelGC.elf)|Moh2RelGC.elf'
     if (-not $Disc) { Fail 'No disc chosen.' }
 }
 $Disc = (Resolve-Path -LiteralPath $Disc).Path
@@ -121,16 +124,26 @@ if ((Get-Item -LiteralPath $Disc).PSIsContainer) {
 }
 $ext = [IO.Path]::GetExtension($Disc).ToLower()
 $stub = "$game\sys\main-stub.dol"
-if ($ext -eq '.iso' -or $ext -eq '.gcm') {
-    $id = Read-Id $Disc
-    if ($id -ne $GameId) { Fail "This disc is $id, not Medal of Honor: Frontline USA ($GameId)." }
+if ($ext -eq '.iso' -or $ext -eq '.gcm' -or $ext -eq '.ciso') {
     $mark = "$game\.extracted-from"
     if (-not ((Test-Path -LiteralPath $mark) -and (Get-Content -LiteralPath $mark -Raw).Trim() -eq $Disc -and
               (Test-Path -LiteralPath "$game\files\Moh2RelGC.elf"))) {
-        Write-Host "Extracting $Disc (about 1.4 GB) ..."
+        $image = $Disc
+        $tempIso = "$Data\disc-temp.iso"
+        if ($ext -eq '.ciso') {
+            Write-Host 'Unpacking the CISO to a temporary ISO (about 1.4 GB, deleted afterwards) ...'
+            Native { & $python -I "$kit\ciso2iso.py" $Disc $tempIso 2>&1 | ForEach-Object { "$_" } }
+            if ($LASTEXITCODE -ne 0) { Remove-Item -LiteralPath $tempIso -ErrorAction SilentlyContinue; Fail 'Could not read that CISO image.' }
+            $image = $tempIso
+        }
+        $id = Read-Id $image
+        if ($id -ne $GameId) { Remove-Item -LiteralPath $tempIso -ErrorAction SilentlyContinue; Fail "This disc is $id, not Medal of Honor: Frontline USA ($GameId)." }
+        Write-Host 'Extracting the disc (about 1.4 GB) ...'
         Remove-Game
-        Native { & "$runtime\dolrecomp.exe" extract $Disc $game 2>&1 | Select-Object -Last 3 | ForEach-Object { "$_" } }
-        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath "$game\files\Moh2RelGC.elf")) { Fail 'Could not extract that disc image.' }
+        Native { & "$runtime\dolrecomp.exe" extract $image $game 2>&1 | Select-Object -Last 3 | ForEach-Object { "$_" } }
+        $ok = $LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath "$game\files\Moh2RelGC.elf")
+        Remove-Item -LiteralPath $tempIso -ErrorAction SilentlyContinue
+        if (-not $ok) { Fail 'Could not extract that disc image.' }
         Move-Item -LiteralPath "$game\sys\main.dol" -Destination $stub -Force
         Set-Content -LiteralPath $mark -Value $Disc
     }
@@ -147,7 +160,7 @@ if ($ext -eq '.iso' -or $ext -eq '.gcm') {
     Native { & cmd.exe /c mklink /J "$game\files" "$discRoot\files" | Out-Null }
     if (-not (Test-Path -LiteralPath "$game\files\Moh2RelGC.elf")) { Fail "Could not link $discRoot\files." }
 } else {
-    Fail "$Disc is not a .iso/.gcm image or Moh2RelGC.elf. Convert other formats to ISO in Dolphin first."
+    Fail "$Disc is not a .iso/.gcm/.ciso image or Moh2RelGC.elf. Convert other formats to ISO in Dolphin first."
 }
 Set-Content -LiteralPath $discFile -Value $Disc
 if ((Sha "$game\files\Moh2RelGC.elf") -ne $ElfSha) {
@@ -157,7 +170,6 @@ Write-Host "Disc: $Disc"
 
 # ---------------------------------------------------------------- program
 Step 'Preparing the game program'
-$python = "$(Get-Pinned 'python')\python.exe"
 $dol = "$game\sys\main.dol"
 Native { & $python -I "$kit\elf2dol.py" "$game\files\Moh2RelGC.elf" $dol }
 if ($LASTEXITCODE -ne 0 -or (Sha $dol) -ne $DolSha) { Fail 'Could not convert Moh2RelGC.elf to a DOL.' }
@@ -169,7 +181,7 @@ New-Item -ItemType Directory -Force -Path "$user\Cache\Shaders" | Out-Null   # t
 $dll = "$module\gGMFE69_recomp.dll"
 $stamp = "$module\.kit-build"
 if (-not $Rebuild -and (Test-Path -LiteralPath $dll) -and (Test-Path -LiteralPath $stamp) -and
-    (Get-Content -LiteralPath $stamp -Raw).Trim() -eq $KitVersion) {
+    (Get-Content -LiteralPath $stamp -Raw).Trim() -eq $BuildVersion) {
     Step 'The game is already built for this kit version.'
     Stop-Transcript | Out-Null; exit 0
 }
@@ -190,7 +202,7 @@ Native { & "$runtime\dolrecomp.exe" "-j$jobs" --backend=c --cpu gekko --gamecube
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath "$build\generated\generated.h")) { Fail 'DolRecomp failed.' }
 Copy-Item -LiteralPath $dol -Destination "$build\generated\main.dol" -Force
 
-Step 'Compiling the game (about 10 to 25 minutes)'
+Step 'Compiling the game (30 to 60 minutes on a laptop, about 15 on a fast desktop; this window shows progress)'
 $bm = @('-I', "$kit\build_module.py", '--root', $build, '--clang', "$llvm\bin", '--python', $python, '--out', $dll, "-j$jobs")
 if (Test-Path -LiteralPath "$kit\profile\merged.profdata") { $bm += @('--profile-use', "$kit\profile\merged.profdata") }
 if (Test-Path -LiteralPath $dll) { Remove-Item -LiteralPath $dll -Force }
@@ -198,7 +210,7 @@ Native { & $python @bm 2>&1 | ForEach-Object { "$_" } }
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $dll)) { Fail "The game did not compile. See $Data\setup.log." }
 Remove-Item -LiteralPath "$build\obj" -Recurse -Force -ErrorAction SilentlyContinue   # ~1 GB of objects; the C stays for a rebuild
 
-Set-Content -LiteralPath $stamp -Value $KitVersion
+Set-Content -LiteralPath $stamp -Value $BuildVersion
 Write-Host ''
 Write-Host 'Setup complete. Starting Medal of Honor: Frontline...' -ForegroundColor Green
 Stop-Transcript | Out-Null
