@@ -76,7 +76,7 @@ stretched sideways, which the hack can't avoid. Untick **Widescreen** in the set
 
 How fast it runs depends on your CPU's single-core speed. On a 15 W laptop CPU (Intel i7-1355U), plugged in,
 menus run at full speed and the opening mission at about **70 to 85%**. On battery it is much slower. Faster
-desktop CPUs do better. The kit pins the game to your fastest cores and turns off Windows power throttling
+desktop CPUs do better. The kit raises the game's priority and turns off Windows power throttling
 for it. Direct3D 11 at the native resolution is the fastest setting.
 
 The game's movies use the VP6 codec, which Dolphin draws with vertical stripes unless "Manual Texture

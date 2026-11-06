@@ -10,8 +10,8 @@
  *    for the disc the first time).
  * 2. Shows a settings window (resolution, graphics, fullscreen, widescreen, controls), unless the
  *    player turned it off; holding Shift while starting shows it again.
- * 3. Starts runtime\moderngekko-run.exe with the built module, maximized and focused, on the fastest
- *    CPU cores. Other arguments are passed to the runtime unchanged.
+ * 3. Starts runtime\moderngekko-run.exe with the built module, maximized and focused, at raised
+ *    priority. Other arguments are passed to the runtime unchanged.
  *
  * Usage: MOHFrontline.exe            play (sets up first if needed)
  *        MOHFrontline.exe --setup    choose another disc
@@ -349,27 +349,12 @@ static int settings_window(void) {
 
 /* ------------------------------------------------------------------ game */
 
-/* The guest CPU runs on one host thread, so keep the game on the fastest cores: those in the
- * highest efficiency class (all cores on a CPU without hybrid cores). Also opts the game out of
- * Windows' power throttling. (From the Baroque and deSPIRIA kits' launchers.) */
-static void place_on_fast_cores(HANDLE process) {
-    ULONG len = 0; DWORD_PTR mask = 0; BYTE best = 0;
-    GetSystemCpuSetInformation(NULL, 0, &len, process, 0);
-    BYTE *buf = len ? HeapAlloc(GetProcessHeap(), 0, len) : NULL;
-    if (buf && GetSystemCpuSetInformation((PSYSTEM_CPU_SET_INFORMATION)buf, len, &len, process, 0)) {
-        for (int pass = 0; pass < 2; pass++)
-            for (ULONG off = 0; off < len; ) {
-                PSYSTEM_CPU_SET_INFORMATION c = (PSYSTEM_CPU_SET_INFORMATION)(buf + off);
-                if (c->Type == CpuSetInformation && c->CpuSet.Group == 0 &&
-                    c->CpuSet.LogicalProcessorIndex < sizeof(DWORD_PTR) * 8) {
-                    if (pass == 0) { if (c->CpuSet.EfficiencyClass > best) best = c->CpuSet.EfficiencyClass; }
-                    else if (c->CpuSet.EfficiencyClass == best) mask |= (DWORD_PTR)1 << c->CpuSet.LogicalProcessorIndex;
-                }
-                off += c->Size;
-            }
-    }
-    if (buf) HeapFree(GetProcessHeap(), 0, buf);
-    if (mask) SetProcessAffinityMask(process, mask);
+/* Raises the game's priority and opts it out of Windows' power throttling. It is deliberately NOT
+ * pinned to the "fast" cores the Baroque/deSPIRIA launchers use: the runtime runs the guest CPU,
+ * the GPU and the DSP on separate threads, and on a 2 P-core laptop (i7-1355U) pinning them to the
+ * P-cores' four hyperthreads measured 12-14 points slower in Mission 1 than leaving placement to
+ * Windows. */
+static void tune_process(HANDLE process) {
     SetPriorityClass(process, ABOVE_NORMAL_PRIORITY_CLASS);
     PROCESS_POWER_THROTTLING_STATE t = { PROCESS_POWER_THROTTLING_CURRENT_VERSION,
                                           PROCESS_POWER_THROTTLING_EXECUTION_SPEED, 0 };
@@ -436,7 +421,7 @@ static int play(const wchar_t *args) {
     if (out != INVALID_HANDLE_VALUE) CloseHandle(out);
     if (in != INVALID_HANDLE_VALUE) CloseHandle(in);
     if (!ok) { fail(L"The game could not start. Run MOHFrontline.exe --rebuild to rebuild it."); return 1; }
-    place_on_fast_cores(pi.hProcess);
+    tune_process(pi.hProcess);
     ResumeThread(pi.hThread);
     CloseHandle(pi.hThread);
 
@@ -473,10 +458,7 @@ int WINAPI wWinMain(HINSTANCE a, HINSTANCE b, PWSTR args, int show) {
 
     int shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
     if (wcsstr(args, L"--rebuild")) { if (!run_setup(L"-Rebuild")) return 1; }
-    else if (wcsstr(args, L"--setup")) {
-        wchar_t p[PATHMAX]; path(p, L"disc.txt"); DeleteFileW(p);
-        if (!run_setup(L"")) return 1;
-    }
+    else if (wcsstr(args, L"--setup")) { if (!run_setup(L"-ChooseDisc")) return 1; }
     else if (!built_for_this_kit()) { if (!run_setup(L"")) return 1; }
     {
         wchar_t src[PATHMAX], dst[PATHMAX];
@@ -491,8 +473,7 @@ int WINAPI wWinMain(HINSTANCE a, HINSTANCE b, PWSTR args, int show) {
         if (choice == CHOICE_QUIT) return 0;
         if (choice == CHOICE_PLAY) break;
         if (choice == CHOICE_DISC) {
-            wchar_t p[PATHMAX]; path(p, L"disc.txt"); DeleteFileW(p);
-            run_setup(L"");
+            run_setup(L"-ChooseDisc");   /* cancelling the picker keeps the current disc */
         } else if (choice == CHOICE_REBUILD) {
             run_setup(L"-Rebuild");
         }

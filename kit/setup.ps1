@@ -12,7 +12,8 @@ param(
     [Parameter(Mandatory = $true)][string]$Root,
     [string]$Data,
     [string]$Disc,
-    [switch]$Rebuild
+    [switch]$Rebuild,
+    [switch]$ChooseDisc   # ask for a disc even if one is saved; cancelling keeps the saved one
 )
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'   # Invoke-WebRequest crawls with a progress bar on PowerShell 5.1
@@ -105,17 +106,22 @@ foreach ($f in "$runtime\moderngekko-run.exe", "$runtime\dolrecomp.exe", "$kit\b
 Step 'Your Medal of Honor: Frontline disc'
 $python = "$(Get-Pinned 'python')\python.exe"
 $discFile = "$Data\disc.txt"
-if (-not $Disc -and (Test-Path -LiteralPath $discFile)) {
+$saved = $null
+if (Test-Path -LiteralPath $discFile) {
     $saved = (Get-Content -LiteralPath $discFile -Raw).Trim()
-    if ($saved -and (Test-Path -LiteralPath $saved)) { $Disc = $saved }
+    if (-not ($saved -and (Test-Path -LiteralPath $saved))) { $saved = $null }
 }
+if (-not $Disc -and -not $ChooseDisc) { $Disc = $saved }
 if (-not $Disc) {
     Write-Host 'Choose your Medal of Honor: Frontline (USA) disc image (.iso / .gcm / .ciso),'
     Write-Host 'or, for a disc extracted with Dolphin, the files\Moh2RelGC.elf inside it.'
     Write-Host '(.rvz, .gcz or .nkit: convert to ISO first in Dolphin, see README.)'
     $Disc = Pick-File 'Choose your Medal of Honor: Frontline disc' `
         'GameCube disc image (*.iso;*.gcm;*.ciso)|*.iso;*.gcm;*.ciso|Extracted disc program (Moh2RelGC.elf)|Moh2RelGC.elf'
-    if (-not $Disc) { Fail 'No disc chosen.' }
+    if (-not $Disc) {
+        if ($ChooseDisc -and $saved) { Write-Host "Keeping $saved"; Stop-Transcript | Out-Null; exit 0 }
+        Fail 'No disc chosen.'
+    }
 }
 $Disc = (Resolve-Path -LiteralPath $Disc).Path
 if ((Get-Item -LiteralPath $Disc).PSIsContainer) {
