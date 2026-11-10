@@ -15,6 +15,100 @@ index f9b5405..4c763e2 100644
    const NetPlay::InputWaitTelemetry telemetry =
        NetPlay::NetPlayClient::GetInputWaitTelemetry();
    if (!telemetry.active) {
+diff --git a/src/runtime/game.cpp b/src/runtime/game.cpp
+index 85860a5..2f977d0 100644
+--- a/src/runtime/game.cpp
++++ b/src/runtime/game.cpp
+@@ -9,6 +9,7 @@
+ #include <fstream>
+ #include <iomanip>
+ #include <sstream>
++#include <unordered_map>
+ #include <vector>
+ 
+ namespace moderngekko
+@@ -47,6 +48,33 @@ std::optional<std::string> HashDirectorySha256(const std::filesystem::path& root
+     return std::filesystem::relative(left, root).generic_string() <
+            std::filesystem::relative(right, root).generic_string();
+   });
++  // Per-file hash cache beside the hashed directory (e.g. <game>/files.sha256cache), keyed on
++  // relative path + size + modification time, so a 1+ GB asset tree is only fully read once.
++  // Lines: <sha256 hex> <size> <mtime ticks> <relative path>
++  struct CachedHash
++  {
++    std::uint64_t size;
++    std::int64_t mtime;
++    std::string hash;
++  };
++  const auto cache_path = root.parent_path() / (root.filename().string() + ".sha256cache");
++  std::unordered_map<std::string, CachedHash> cache;
++  {
++    std::ifstream in(cache_path);
++    std::string line;
++    while (std::getline(in, line))
++    {
++      std::istringstream fields(line);
++      CachedHash entry;
++      std::string relative;
++      if (fields >> entry.hash >> entry.size >> entry.mtime && fields.get() == ' ' &&
++          std::getline(fields, relative) && entry.hash.size() == 64)
++        cache.emplace(std::move(relative), std::move(entry));
++    }
++  }
++  std::ostringstream new_cache;
++  bool cache_dirty = false;
++
+   std::vector<std::uint8_t> manifest;
+   for (const auto& path : files)
+   {
+@@ -54,9 +82,26 @@ std::optional<std::string> HashDirectorySha256(const std::filesystem::path& root
+     if (ec)
+       return std::nullopt;
+     const auto size = std::filesystem::file_size(path, ec);
+-    const auto hash = HashFileSha256(path);
+-    if (ec || !hash)
++    if (ec)
+       return std::nullopt;
++    const auto mtime = static_cast<std::int64_t>(
++        std::filesystem::last_write_time(path, ec).time_since_epoch().count());
++    if (ec)
++      return std::nullopt;
++    std::optional<std::string> hash;
++    if (const auto it = cache.find(relative);
++        it != cache.end() && it->second.size == size && it->second.mtime == mtime)
++    {
++      hash = it->second.hash;
++    }
++    else
++    {
++      hash = HashFileSha256(path);
++      cache_dirty = true;
++    }
++    if (!hash)
++      return std::nullopt;
++    new_cache << *hash << ' ' << size << ' ' << mtime << ' ' << relative << '\n';
+     const auto append_u64 = [&](std::uint64_t value) {
+       for (int shift = 56; shift >= 0; shift -= 8)
+         manifest.push_back(static_cast<std::uint8_t>(value >> shift));
+@@ -66,6 +111,18 @@ std::optional<std::string> HashDirectorySha256(const std::filesystem::path& root
+     append_u64(size);
+     manifest.insert(manifest.end(), hash->begin(), hash->end());
+   }
++  if (cache_dirty || cache.size() != files.size())
++  {
++    // Best effort: a read-only game folder just means hashing again next time.
++    const auto temp = cache_path.string() + ".tmp";
++    {
++      std::ofstream out(temp, std::ios::trunc);
++      out << new_cache.str();
++    }
++    std::filesystem::rename(temp, cache_path, ec);
++    if (ec)
++      std::filesystem::remove(temp, ec);
++  }
+   return Sha256(std::move(manifest));
+ }
+ 
 diff --git a/src/runtime/mod_loader.cpp b/src/runtime/mod_loader.cpp
 index 4b2345f..679baf5 100644
 --- a/src/runtime/mod_loader.cpp
