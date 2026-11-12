@@ -19,6 +19,50 @@ index 345b9602dd..5a36cf7fcd 100644
  void ppc_system_call_exception(CPUState* cpu, u32 cia) {
      ppc_take_exception(cpu, PPC_EXC_SYSTEM_CALL, PPC_VECTOR_SYSTEM_CALL, cia + 4u, 0);
  }
+diff --git a/Source/Core/Core/PowerPC/StaticRecomp/StaticRecompCore_Hooks.cpp b/Source/Core/Core/PowerPC/StaticRecomp/StaticRecompCore_Hooks.cpp
+index 7b3d845cee..1c84d94189 100644
+--- a/Source/Core/Core/PowerPC/StaticRecomp/StaticRecompCore_Hooks.cpp
++++ b/Source/Core/Core/PowerPC/StaticRecomp/StaticRecompCore_Hooks.cpp
+@@ -65,6 +65,39 @@ u64 StaticRecompCore::HookExternalRead(CPUState* cpu, u32 ea, u8 size)
+ void StaticRecompCore::HookExternalWrite(CPUState* cpu, u32 ea, u64 value, u8 size)
+ {
+   auto* core = static_cast<StaticRecompCore*>(cpu->external_user_data);
++
++  // Local change: hot gather-pipe stores (several per vertex) skip the REL lookup and use
++  // GPFifo's unchecked writes plus the plain 32-byte burst check. The checked Write*()
++  // calls also run JitInterface::CompileExceptionCheck, a hash-set lookup per burst that
++  // only matters to JIT blocks. Bursts still happen at exactly the same points.
++  if ((ea & 0xFFFFF000) == 0xCC008000u && core->m_active_rel_sections.empty() &&
++      !core->m_lockstep_verifier->m_ls_journaling)
++  {
++    auto& gpfifo = core->m_system.GetGPFifo();
++    switch (size)
++    {
++    case 1:
++      gpfifo.FastWrite8(static_cast<u8>(value));
++      break;
++    case 2:
++      gpfifo.FastWrite16(static_cast<u16>(value));
++      break;
++    case 4:
++      gpfifo.FastWrite32(static_cast<u32>(value));
++      break;
++    default:
++      for (u32 i = size * 8u; i > 0;)
++      {
++        i -= 8;
++        gpfifo.FastWrite8(static_cast<u8>(value >> i));
++        gpfifo.FastCheckGatherPipe();
++      }
++      return;
++    }
++    gpfifo.FastCheckGatherPipe();
++    return;
++  }
++
+   ea = core->TranslateRelAddress(ea);
+   if (ea == 0)
+     std::fprintf(stderr, "[zero-access] write size=%u guest_pc=%08x ppc_pc=%08x lr=%08x\n", size,
 diff --git a/Source/Core/VideoCommon/CommandProcessor.cpp b/Source/Core/VideoCommon/CommandProcessor.cpp
 index 1dbf466f1c..393a109f15 100644
 --- a/Source/Core/VideoCommon/CommandProcessor.cpp
