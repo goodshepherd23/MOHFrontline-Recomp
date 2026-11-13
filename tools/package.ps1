@@ -20,7 +20,7 @@ $windres = Join-Path (Split-Path -Parent $Clang) 'llvm-windres.exe'
 & $windres "$repo\launcher\mohf_launcher.rc" -O coff -o "$repo\dist\mohf_launcher.res"
 if ($LASTEXITCODE -ne 0) { throw 'launcher resource build failed' }
 & $Clang -O2 -std=c11 -Wall -Wextra -municode -mwindows -static "-DKIT_VER=$version" `
-    "$repo\launcher\mohf_launcher.c" "$repo\dist\mohf_launcher.res" -lole32 -lshell32 -luuid -o "$stage\MOHFrontline.exe"
+    "$repo\launcher\mohf_launcher.c" "$repo\dist\mohf_launcher.res" -lole32 -lshell32 -luuid -lcomctl32 -o "$stage\MOHFrontline.exe"
 if ($LASTEXITCODE -ne 0) { throw 'launcher build failed' }
 
 # runtime\: the game-independent ModernGekko runtime, DolRecomp and the MSVC runtime they need.

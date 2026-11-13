@@ -63,6 +63,232 @@ index 7b3d845cee..1c84d94189 100644
    ea = core->TranslateRelAddress(ea);
    if (ea == 0)
      std::fprintf(stderr, "[zero-access] write size=%u guest_pc=%08x ppc_pc=%08x lr=%08x\n", size,
+diff --git a/Source/Core/DolphinNoGUI/PlatformWin32.cpp b/Source/Core/DolphinNoGUI/PlatformWin32.cpp
+index 3402fdae95..5a14d5146d 100644
+--- a/Source/Core/DolphinNoGUI/PlatformWin32.cpp
++++ b/Source/Core/DolphinNoGUI/PlatformWin32.cpp
+@@ -36,6 +36,7 @@ constexpr UINT ID_SAVE_STATE = 41001;
+ constexpr UINT ID_PAUSE = 41002;
+ constexpr UINT ID_MUTE = 41003;
+ constexpr UINT ID_FULLSCREEN = 41004;
++constexpr UINT ID_LOAD_NEWEST = 41005;
+ constexpr UINT ID_LOAD_STATE_FIRST = 41100;
+ constexpr UINT ID_LOAD_STATE_LAST = 41199;
+ 
+@@ -64,6 +65,9 @@ private:
+   bool CreateMenus();
+   void RefreshMenu(HMENU menu);
+   void SaveStateToStatesDirectory();
++  void LoadNewestState();
++  void UpdateCursorLock();
++  void ReleaseCursor();
+   void ToggleFullscreen();
+   void UpdateWindowPosition();
+   void ProcessEvents();
+@@ -78,6 +82,12 @@ private:
+   std::time_t m_last_save_time{};
+   std::size_t m_save_sequence{};
+   bool m_fullscreen = false;
++  // Local change: [Interface] LockCursor support (mouse confined to and hidden over the game
++  // while it is the active window; released for menus, moving/resizing and other windows).
++  bool m_cursor_locked = false;
++  bool m_in_menu = false;
++  bool m_in_size_move = false;
++  RECT m_clip_rect{};
+   LONG m_windowed_style = 0;
+   RECT m_windowed_rect{};
+ 
+@@ -89,6 +99,7 @@ private:
+ 
+ PlatformWin32::~PlatformWin32()
+ {
++  ReleaseCursor();
+   if (m_hwnd)
+     DestroyWindow(m_hwnd);
+ }
+@@ -144,7 +155,8 @@ bool PlatformWin32::CreateMenus()
+   if (!m_menu || !m_file_menu || !m_load_menu || !m_view_menu)
+     return false;
+ 
+-  AppendMenuW(m_file_menu, MF_STRING, ID_SAVE_STATE, L"&Save State\tF1");
++  AppendMenuW(m_file_menu, MF_STRING, ID_SAVE_STATE, L"&Quick Save\tF5");
++  AppendMenuW(m_file_menu, MF_STRING, ID_LOAD_NEWEST, L"Quick L&oad (newest)\tF9");
+   AppendMenuW(m_file_menu, MF_POPUP, reinterpret_cast<UINT_PTR>(m_load_menu), L"&Load State");
+   AppendMenuW(m_file_menu, MF_SEPARATOR, 0, nullptr);
+   // Checked state is refreshed from the core when the menu opens, so it cannot
+@@ -229,6 +241,55 @@ void PlatformWin32::SaveStateToStatesDirectory()
+   State::SaveAs(Core::System::GetInstance(), PathToString(path));
+ }
+ 
++void PlatformWin32::LoadNewestState()
++{
++  const std::vector<std::filesystem::path> states =
++      State::Layout::List(StringToPath(File::GetUserPath(D_STATESAVES_IDX)));
++  if (!states.empty())  // List() puts the newest first
++    State::LoadAs(Core::System::GetInstance(), PathToString(states.front()));
++}
++
++void PlatformWin32::ReleaseCursor()
++{
++  if (!m_cursor_locked)
++    return;
++  ClipCursor(nullptr);
++  m_cursor_locked = false;
++  m_clip_rect = {};
++}
++
++void PlatformWin32::UpdateCursorLock()
++{
++  const bool active = GetForegroundWindow() == m_hwnd && !IsIconic(m_hwnd);
++  m_window_focus = active;
++  if (!Config::Get(Config::MAIN_LOCK_CURSOR) || !active || m_in_menu || m_in_size_move ||
++      Core::GetState(Core::System::GetInstance()) == Core::State::Paused)
++  {
++    ReleaseCursor();
++    return;
++  }
++
++  RECT rc{};
++  if (!GetClientRect(m_hwnd, &rc) || rc.right <= rc.left || rc.bottom <= rc.top)
++    return;
++  POINT corners[2] = {{rc.left, rc.top}, {rc.right, rc.bottom}};
++  MapWindowPoints(m_hwnd, nullptr, corners, 2);
++  const RECT screen{corners[0].x, corners[0].y, corners[1].x, corners[1].y};
++  // Windows drops the clip whenever another window takes over, so re-apply it each pass
++  // rather than only when the rectangle changes.
++  if (!m_cursor_locked || !EqualRect(&screen, &m_clip_rect) || !GetClipCursor(&rc) ||
++      !EqualRect(&rc, &screen))
++  {
++    ClipCursor(&screen);
++    m_clip_rect = screen;
++  }
++  if (!m_cursor_locked)
++  {
++    m_cursor_locked = true;
++    SetCursor(nullptr);
++  }
++}
++
+ void PlatformWin32::ToggleFullscreen()
+ {
+   if (!m_fullscreen)
+@@ -291,6 +352,7 @@ void PlatformWin32::MainLoop()
+     Core::HostDispatchJobs(Core::System::GetInstance());
+     ProcessEvents();
+     UpdateWindowPosition();
++    UpdateCursorLock();
+ 
+     // TODO: Is this sleep appropriate?
+     std::this_thread::sleep_for(std::chrono::milliseconds(1));
+@@ -364,36 +426,38 @@ LRESULT PlatformWin32::WndProc(const HWND hwnd, const UINT msg, const WPARAM wPa
+   break;
+ 
+   case WM_KEYDOWN:
++  {
++    // Local change: Escape and Space are game controls in the keyboard layout (Start,
++    // jump), so Escape no longer quits or leaves fullscreen and fast-forward moved to Tab.
++    // Quick save/load are F5/F9 (F1 kept as a second save key).
+     // Bit 30 of lParam is the previous key state: ignore auto-repeat, or holding
+-    // F1 down would write a state every few milliseconds.
+-    if (wParam == VK_F1 && (static_cast<ULONG_PTR>(lParam) & (1u << 30)) == 0)
++    // a key down would write a state every few milliseconds.
++    const bool first_press = (static_cast<ULONG_PTR>(lParam) & (1u << 30)) == 0;
++    if ((wParam == VK_F5 || wParam == VK_F1) && first_press)
+     {
+       platform->SaveStateToStatesDirectory();
+       return 0;
+     }
+-    else if (wParam == VK_SPACE)
++    else if (wParam == VK_F9 && first_press)
+     {
+-      Config::SetCurrent(Config::MAIN_EMULATION_SPEED, FAST_FORWARD_SPEED);
++      platform->LoadNewestState();
+       return 0;
+     }
+-    else if (wParam == VK_F11)
++    else if (wParam == VK_TAB)
+     {
+-      platform->ToggleFullscreen();
++      Config::SetCurrent(Config::MAIN_EMULATION_SPEED, FAST_FORWARD_SPEED);
+       return 0;
+     }
+-    else if (wParam == VK_ESCAPE && platform->m_fullscreen)
++    else if (wParam == VK_F11 && first_press)
+     {
+       platform->ToggleFullscreen();
+       return 0;
+     }
+-    else if (wParam == VK_ESCAPE)
+-    {
+-      platform->RequestShutdown();
+-    }
+     break;
++  }
+ 
+   case WM_KEYUP:
+-    if (wParam == VK_SPACE)
++    if (wParam == VK_TAB)
+     {
+       Config::SetCurrent(Config::MAIN_EMULATION_SPEED, 1.0f);
+       return 0;
+@@ -401,9 +465,45 @@ LRESULT PlatformWin32::WndProc(const HWND hwnd, const UINT msg, const WPARAM wPa
+     break;
+ 
+   case WM_KILLFOCUS:
+-    // Never leave emulation running fast because Space was released while
++    // Never leave emulation running fast because Tab was released while
+     // another window had focus and the key-up went elsewhere.
+     Config::SetCurrent(Config::MAIN_EMULATION_SPEED, 1.0f);
++    if (platform)
++      platform->ReleaseCursor();
++    break;
++
++  case WM_SETCURSOR:
++    if (platform && platform->m_cursor_locked && LOWORD(lParam) == HTCLIENT)
++    {
++      SetCursor(nullptr);
++      return TRUE;
++    }
++    return DefWindowProc(hwnd, msg, wParam, lParam);
++
++  case WM_ENTERMENULOOP:
++    if (platform)
++    {
++      platform->m_in_menu = true;
++      platform->ReleaseCursor();
++    }
++    break;
++
++  case WM_EXITMENULOOP:
++    if (platform)
++      platform->m_in_menu = false;
++    break;
++
++  case WM_ENTERSIZEMOVE:
++    if (platform)
++    {
++      platform->m_in_size_move = true;
++      platform->ReleaseCursor();
++    }
++    break;
++
++  case WM_EXITSIZEMOVE:
++    if (platform)
++      platform->m_in_size_move = false;
+     break;
+ 
+   case WM_SYSKEYDOWN:
+@@ -429,6 +529,10 @@ LRESULT PlatformWin32::WndProc(const HWND hwnd, const UINT msg, const WPARAM wPa
+     {
+       platform->SaveStateToStatesDirectory();
+     }
++    else if (command == ID_LOAD_NEWEST)
++    {
++      platform->LoadNewestState();
++    }
+     else if (command == ID_PAUSE)
+     {
+       const bool paused = Core::GetState(system) == Core::State::Paused;
 diff --git a/Source/Core/VideoCommon/CommandProcessor.cpp b/Source/Core/VideoCommon/CommandProcessor.cpp
 index 1dbf466f1c..393a109f15 100644
 --- a/Source/Core/VideoCommon/CommandProcessor.cpp

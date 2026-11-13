@@ -20,6 +20,7 @@
 #define _WIN32_WINNT 0x0A00
 #define COBJMACROS
 #include <windows.h>
+#include <commctrl.h>
 #include <shlobj.h>
 #include <shobjidl.h>
 #include <stdio.h>
@@ -186,7 +187,7 @@ static void add_missing_defaults(const wchar_t *src, const wchar_t *dst) {
 /* ------------------------------------------------------------------ settings window */
 
 enum { ID_RES = 100, ID_BACKEND, ID_FULLSCREEN, ID_WIDE, ID_FPS, ID_SKIP, ID_PLAY, ID_QUIT, ID_DISC,
-       ID_REBUILD, ID_OPEN, ID_RESETPAD, ID_AUDIO };
+       ID_REBUILD, ID_OPEN, ID_RESETPAD, ID_AUDIO, ID_MOUSE };
 enum { CHOICE_QUIT, CHOICE_PLAY, CHOICE_DISC, CHOICE_REBUILD };
 
 static const wchar_t *res_values[] = { L"640x528", L"1280x1056", L"1920x1584", L"2560x2112" };
@@ -216,6 +217,7 @@ static HWND add(HWND parent, const wchar_t *cls, const wchar_t *text, DWORD styl
 }
 static void check(HWND w, int id, int on) { SendDlgItemMessageW(w, id, BM_SETCHECK, on ? BST_CHECKED : BST_UNCHECKED, 0); }
 static int checked(HWND w, int id) { return SendDlgItemMessageW(w, id, BM_GETCHECK, 0, 0) == BST_CHECKED; }
+static int mouse_sensitivity(void);
 
 static void load_settings(HWND w) {
     wchar_t v[64];
@@ -232,6 +234,8 @@ static void load_settings(HWND w) {
     check(w, ID_SKIP, ini_bool(launcher_ini, L"Launcher", L"SkipSettings", 0));
     /* Accurate audio = Dolphin's DSP LLE; HLE drops sound effects in this game. */
     check(w, ID_AUDIO, !ini_bool(game_ini, L"Core", L"DSPHLE", 0));
+    SendDlgItemMessageW(w, ID_MOUSE, TBM_SETRANGE, TRUE, MAKELPARAM(1, 10));
+    SendDlgItemMessageW(w, ID_MOUSE, TBM_SETPOS, TRUE, mouse_sensitivity());
 }
 
 static void save_settings(HWND w) {
@@ -246,6 +250,51 @@ static void save_settings(HWND w) {
     WritePrivateProfileStringW(L"Settings", L"wideScreenHack", wide ? L"True" : L"False", gfx_ini);
     WritePrivateProfileStringW(L"Launcher", L"SkipSettings", checked(w, ID_SKIP) ? L"1" : L"0", launcher_ini);
     WritePrivateProfileStringW(L"Core", L"DSPHLE", checked(w, ID_AUDIO) ? L"False" : L"True", game_ini);
+    wchar_t sens[8]; swprintf(sens, 8, L"%d", (int)SendDlgItemMessageW(w, ID_MOUSE, TBM_GETPOS, 0, 0));
+    WritePrivateProfileStringW(L"Launcher", L"MouseSensitivity", sens, launcher_ini);
+}
+
+/* Mouse look. Dolphin's `RelativeMouse` input is the mouse movement since the previous controller
+ * poll. The game polls far more often than a mouse moves between polls, so mapped straight onto the
+ * C-stick the game saw mostly 0 with short bursts of full tilt (measured: 0 in ~90% of reads, 121
+ * in the rest): a stop-start, "robotic" turn. The curve written here instead
+ *   s = smooth(min(1, delta * gain), 0, 0.15)   holds the latest movement for up to 150 ms,
+ *   tilt = min(1, (s > 0.02) * 0.55 + s * 0.6)  starts at 0.55 because the game ignores smaller
+ *                                                 tilts (0.6 reached it as 23 of 121),
+ * which reads as a steady tilt while the mouse moves (slow: ~42, medium and fast: 121) and 0 when it
+ * stops. The sensitivity slider sets the gain. Dolphin functions are bare names; "$name" is a
+ * variable, which silently reads 0. Only lines that still use the mouse (the kit's old or new
+ * default) are rewritten, so a player's own mapping is left alone. */
+static int mouse_sensitivity(void) {
+    wchar_t v[16]; ini_get(launcher_ini, L"Launcher", L"MouseSensitivity", L"5", v, 16);
+    int n = _wtoi(v); return n < 1 ? 1 : n > 10 ? 10 : n;
+}
+static void apply_mouse_look(int sens) {
+    static const wchar_t *keys[4] = { L"C-Stick/Up", L"C-Stick/Down", L"C-Stick/Left", L"C-Stick/Right" };
+    static const wchar_t *axes[4] = { L"RelativeMouse Y-", L"RelativeMouse Y+", L"RelativeMouse X-", L"RelativeMouse X+" };
+    static const wchar_t generated[] = L"min(1, (smooth(min(1, `RelativeMouse";
+    static const wchar_t generated_end[] = L", 0, 0.15) * 0.6)";
+    wchar_t pad[PATHMAX], v[1024], mine[512], out[1024];
+    path(pad, L"user\\Config\\GCPadNew.ini");
+    double gain = 0.02 * sens;
+    for (int i = 0; i < 4; i++) {
+        GetPrivateProfileStringW(L"GCPad1", keys[i], L"", v, 1024, pad);
+        wchar_t old_plain[64]; swprintf(old_plain, 64, L"`%ls`", axes[i]);
+        const wchar_t *rest;
+        if (!wcsncmp(v, old_plain, wcslen(old_plain))) rest = v + wcslen(old_plain);
+        else if (!wcsncmp(v, generated, wcslen(generated))) {
+            rest = wcsstr(v, generated_end);                   /* end of the generated expression */
+            if (!rest) continue;
+            rest += wcslen(generated_end);
+        } else continue;                                       /* remapped by the player: keep it */
+        swprintf(mine, 512, L"min(1, (smooth(min(1, `%ls` * %.3f), 0, 0.15) > 0.02) * 0.55 + "
+                            L"smooth(min(1, `%ls` * %.3f), 0, 0.15) * 0.6)", axes[i], gain, axes[i], gain);
+        swprintf(out, 1024, L"%ls%ls", mine, rest);
+        WritePrivateProfileStringW(L"GCPad1", keys[i], out, pad);
+    }
+    /* Mouse look needs the cursor kept in the window; older installs never got this key. */
+    wchar_t lock[16]; ini_get(dolphin_ini, L"Interface", L"LockCursor", L"", lock, 16);
+    if (!lock[0]) WritePrivateProfileStringW(L"Interface", L"LockCursor", L"True", dolphin_ini);
 }
 
 /* Puts the kit's default controls back (controller + keyboard and mouse) and locks the mouse
@@ -288,6 +337,8 @@ static int settings_window(void) {
     SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof ncm, &ncm, 0);
     g_dpi = (int)GetDpiForSystem();
     g_font = CreateFontIndirectW(&ncm.lfMessageFont);
+    INITCOMMONCONTROLSEX icc = { sizeof icc, ICC_BAR_CLASSES };
+    InitCommonControlsEx(&icc);
 
     WNDCLASSW wc = {0};
     wc.lpfnWndProc = settings_proc; wc.hInstance = GetModuleHandleW(NULL);
@@ -296,7 +347,7 @@ static int settings_window(void) {
     wc.hIcon = LoadIconW(NULL, IDI_APPLICATION);
     RegisterClassW(&wc);
 
-    RECT r = { 0, 0, S(460), S(396) };
+    RECT r = { 0, 0, S(460), S(430) };
     AdjustWindowRect(&r, WS_CAPTION | WS_SYSMENU, FALSE);
     int ww = r.right - r.left, wh = r.bottom - r.top;
     HWND w = CreateWindowExW(0, wc.lpszClassName, TITLE, WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
@@ -320,17 +371,19 @@ static int settings_window(void) {
     add(w, L"BUTTON", L"Show speed in the title bar", BS_AUTOCHECKBOX | WS_TABSTOP, 28, 186, 400, 22, ID_FPS);
     add(w, L"BUTTON", L"Accurate audio (all sound effects; slightly slower)", BS_AUTOCHECKBOX | WS_TABSTOP, 28, 210, 400, 22, ID_AUDIO);
 
-    add(w, L"BUTTON", L"Controls", BS_GROUPBOX, 12, 248, 436, 62, -1);
+    add(w, L"BUTTON", L"Controls", BS_GROUPBOX, 12, 248, 436, 96, -1);
     add(w, L"STATIC", L"Controller, or keyboard and mouse (WASD, mouse look, click to fire). See the README.",
         0, 28, 268, 300, 36, -1);
     add(w, L"BUTTON", L"Reset controls", BS_PUSHBUTTON | WS_TABSTOP, 336, 272, 100, 26, ID_RESETPAD);
+    add(w, L"STATIC", L"Mouse sensitivity:", 0, 28, 312, 110, 20, -1);
+    add(w, TRACKBAR_CLASSW, L"", TBS_HORZ | TBS_AUTOTICKS | WS_TABSTOP, 140, 306, 292, 30, ID_MOUSE);
 
     add(w, L"BUTTON", L"Don't show this window (hold Shift when starting to see it again)", BS_AUTOCHECKBOX | WS_TABSTOP,
-        16, 318, 430, 22, ID_SKIP);
-    add(w, L"BUTTON", L"Change disc...", BS_PUSHBUTTON | WS_TABSTOP, 12, 354, 100, 30, ID_DISC);
-    add(w, L"BUTTON", L"Rebuild...", BS_PUSHBUTTON | WS_TABSTOP, 118, 354, 84, 30, ID_REBUILD);
-    add(w, L"BUTTON", L"Quit", BS_PUSHBUTTON | WS_TABSTOP, 268, 354, 84, 30, ID_QUIT);
-    HWND play = add(w, L"BUTTON", L"Play", BS_DEFPUSHBUTTON | WS_TABSTOP, 358, 354, 90, 30, ID_PLAY);
+        16, 352, 430, 22, ID_SKIP);
+    add(w, L"BUTTON", L"Change disc...", BS_PUSHBUTTON | WS_TABSTOP, 12, 388, 100, 30, ID_DISC);
+    add(w, L"BUTTON", L"Rebuild...", BS_PUSHBUTTON | WS_TABSTOP, 118, 388, 84, 30, ID_REBUILD);
+    add(w, L"BUTTON", L"Quit", BS_PUSHBUTTON | WS_TABSTOP, 268, 388, 84, 30, ID_QUIT);
+    HWND play = add(w, L"BUTTON", L"Play", BS_DEFPUSHBUTTON | WS_TABSTOP, 358, 388, 90, 30, ID_PLAY);
 
     load_settings(w);
     ShowWindow(w, SW_SHOWNORMAL);
@@ -485,5 +538,6 @@ int WINAPI wWinMain(HINSTANCE a, HINSTANCE b, PWSTR args, int show) {
         shift = 1;   /* back to the window after a disc change or rebuild */
     }
     if (!built_for_this_kit()) { fail(L"The game is not built yet. Choose your disc with Change disc."); return 1; }
+    apply_mouse_look(mouse_sensitivity());
     return play(args);
 }

@@ -36,6 +36,7 @@ After that, a settings window opens before each start:
 - **Graphics:** Direct3D 11 (recommended), Vulkan or OpenGL.
 - **Fullscreen**, **Widescreen** and **Show speed in the title bar**.
 - **Accurate audio:** Dolphin's DSP LLE, on by default. The faster HLE drops sound effects in this game. Untick it for a few percent more speed.
+- **Mouse sensitivity:** how fast the mouse turns the view (1 to 10, default 5).
 - **Reset controls:** puts the default controls below back.
 - **Change disc**, **Rebuild** and **Open folder**.
 
@@ -63,9 +64,25 @@ An Xbox-style (XInput) controller and keyboard and mouse both work out of the bo
 | D-pad up / down | D-pad | 1 / 2 |
 | Pause (Start) | Start | Esc |
 
-The mouse is locked to the game window while it has focus. If you changed the controls in v0.1.0, press
-**Reset controls** in the settings window to get this layout. The mapping is Dolphin's, in
-`user\Config\GCPadNew.ini` in the game folder.
+While the game window is in front, the mouse pointer is hidden and kept inside it. Press **Alt** (opens the
+window's menu), **Alt+Tab** or minimize the game to get the pointer back.
+
+Mouse look turns the view smoothly while the mouse moves and stops when it stops. Change **Mouse
+sensitivity** in the settings window if it is too slow or too fast. The game itself has a top turning speed,
+so very fast flicks turn no faster than the right stick pushed all the way.
+
+| Key | Does |
+|---|---|
+| F5 (or F1) | Quick save (a new save each time, in `user\StateSaves`) |
+| F9 | Quick load: loads the newest save. **File > Load State** lists them all |
+| Tab (hold) | Fast-forward |
+| F11 or Alt+Enter | Fullscreen on/off |
+
+Quick saves are emulator snapshots, separate from the game's own saves on the memory card.
+
+If you changed the controls in v0.1.0, press **Reset controls** in the settings window to get this layout.
+The mapping is Dolphin's, in `user\Config\GCPadNew.ini` in the game folder. The launcher updates only the
+four mouse-look lines, and only while they still use the mouse, so your own remapping is kept.
 
 ### Widescreen
 
@@ -119,7 +136,7 @@ GPL-3.0 (see `LICENSE`), like ModernGekko and DolRecomp. The runtime binaries in
 | Project | Commit | Local changes |
 |---|---|---|
 | [ExpansionPak/ModernGekko](https://github.com/ExpansionPak/ModernGekko) | `edd460a` | `patches/ModernGekko-edd460a.patch`: D3D11 backend option, speed in the title bar, PGO run fix, no mod-hook hash lookups when no mods are loaded, cached game-file hashes (start-up in seconds instead of minutes after the first run) |
-| [ExpansionPak/RecompCore](https://github.com/ExpansionPak/RecompCore) (Dolphin fork, `vendor/dolphin`) | `10f7ac4` | `patches/RecompCore-10f7ac4.patch`: `ppc_native_region_available` stub, command FIFO fields on separate cache lines (less CPU/GPU thread contention), a leaner gather-pipe write path for the game's graphics commands |
+| [ExpansionPak/RecompCore](https://github.com/ExpansionPak/RecompCore) (Dolphin fork, `vendor/dolphin`) | `10f7ac4` | `patches/RecompCore-10f7ac4.patch`: `ppc_native_region_available` stub, command FIFO fields on separate cache lines (less CPU/GPU thread contention), a leaner gather-pipe write path for the game's graphics commands, game window: mouse kept in the window (LockCursor), F5/F9 quick save/load, Tab fast-forward, Esc no longer quits |
 | [ExpansionPak/DolRecomp](https://github.com/ExpansionPak/DolRecomp) (`vendor/dolphin/DolRecomp`) | `1bec355` | `patches/DolRecomp-1bec355.patch`: direct cross-chunk calls enabled, fast floating point, env defaults |
 
 These were built with Visual Studio 2026 (MSVC 14.51), Release with whole-program optimization
