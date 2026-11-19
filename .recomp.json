@@ -1,0 +1,14 @@
+{
+  "$schema": "https://recomp.fyi/schema/v1.json",
+  "game": "Medal of Honor: Frontline",
+  "wikidata": "Q2226763",
+  "system": "GameCube",
+  "type": "recomp",
+  "original": {
+    "region": "USA",
+    "serial": "GMFE69"
+  },
+  "status": "released",
+  "targets": ["Windows"],
+  "toolchain": ["DolRecomp", "ModernGekko"]
+}
