@@ -8,7 +8,7 @@
     "region": "USA",
     "serial": "GMFE69"
   },
-  "status": "released",
+  "status": "playable",
   "targets": ["Windows"],
   "toolchain": ["DolRecomp", "ModernGekko"]
 }
