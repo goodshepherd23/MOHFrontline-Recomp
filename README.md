@@ -2,6 +2,20 @@
 
 A native Windows build of **Medal of Honor: Frontline** (GameCube, USA), made from your own disc.
 
+> **What's new in v0.2.4.** Thanks to everyone who left feedback. v0.2.4 is out and runs a lot better:
+>
+> - Much faster in missions: the opening mission went from about 73% to 93% speed on a 15 W laptop CPU
+>   (Intel i7-1355U). The audio chip was being run on its own thread on CPUs with more than 4 cores, and the
+>   game spent much of its time waiting on it. That's fixed.
+> - Start-up takes seconds again (v0.2.2 and v0.2.3 re-checked every game file on every launch).
+> - Fullscreen is real borderless fullscreen, with no border around the picture.
+> - Sound keeps its pitch when the game runs below full speed.
+> - Earlier updates added keyboard and mouse with smooth mouse look, a settings window, quick save (F5) and
+>   load (F9), fixed movie stripes, and all sound effects.
+>
+> The first start after updating rebuilds the game from your disc once (20 to 60 minutes, progress shown);
+> settings and saves are kept. If it still runs poorly for you, please say what CPU and GPU you have.
+
 The game's program is statically recompiled to C with [DolRecomp](https://github.com/ExpansionPak/DolRecomp)
 and compiled on your PC into a native module. That module runs on
 [ModernGekko](https://github.com/ExpansionPak/ModernGekko), a runtime built on Dolphin's hardware emulation
