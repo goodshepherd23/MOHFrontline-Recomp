@@ -32,9 +32,10 @@ this kit only rebuild the game when the build itself changed.
 
 After that, a settings window opens before each start:
 
-- **Resolution:** native (fastest) up to 4x.
+- **Resolution:** the game's own 640 x 528 (fastest), or 2x / 3x / 4x for a sharp picture on a 1080p, 1440p
+  or 4K screen. The window itself always fills your screen; this sets how detailed the 3D picture is.
 - **Graphics:** Direct3D 11 (recommended), Vulkan or OpenGL.
-- **Fullscreen**, **Widescreen** and **Show speed in the title bar**.
+- **Fullscreen** (borderless, the whole screen), **Widescreen** and **Show speed in the title bar**.
 - **Accurate audio:** Dolphin's DSP LLE, on by default. The faster HLE drops sound effects in this game. Untick it for a few percent more speed.
 - **Mouse sensitivity:** how fast the mouse turns the view (1 to 10, default 5).
 - **Reset controls:** puts the default controls below back.
@@ -97,6 +98,10 @@ menus run at full speed and the opening mission at about **70 to 85%**. On batte
 desktop CPUs do better. The kit raises the game's priority and turns off Windows power throttling
 for it. Direct3D 11 at the native resolution is the fastest setting.
 
+Shaders are compiled in the background (Dolphin's ubershaders draw in the meantime), so an effect that appears
+for the first time doesn't freeze the game, and shaders the game has used before are built while it loads. When the game runs below full speed, the sound keeps its pitch instead of
+dropping. The game's frame rate is the GameCube game's own (it can't be raised).
+
 The game's movies use the VP6 codec, which Dolphin draws with vertical stripes unless "Manual Texture
 Sampling" is on. The kit turns it on for this game (`user\GameSettings\GMFE69.ini`).
 
@@ -108,11 +113,25 @@ Two choices trade exactness for speed:
 - **Profile-guided optimization:** the shipped profile (`kit\profile`) was recorded in the first mission. It
   makes the compiled game about 20% faster.
 
+Other speed work, none of which changes what the game does:
+
+- **Fewer ways into each block of code:** DolRecomp writes the game as large C functions with a `switch`
+  that lets execution start at any instruction. The kit now keeps only real entry points (branch and call
+  targets, return addresses, and code addresses found in the game's data), so the compiler can keep values
+  in registers across instructions. Any other address still works: it runs one instruction in Dolphin's
+  interpreter and carries on. About 5 points faster in the first mission (v0.2.4).
+- **Audio DSP on the game's CPU thread:** Dolphin put the DSP on its own thread by itself on CPUs with more
+  than 4 cores, and with Accurate audio the game then waited on and woke that thread thousands of times a
+  second. Running it inline measured **93% vs 73%** in the first mission (v0.2.4). The setting is
+  `[DSP] DSPThread` in `user\Config\Dolphin.ini`, which the runtime now honours.
+- **No mod lookups without mods**, a leaner path for the game's graphics commands, and a runtime built with
+  whole-program optimization.
+
 ## Known issues
 
 - **Speed:** see above. It is the main open issue.
 - **Sound:** with Dolphin's faster DSP HLE this game drops sound effects (a player report, and Dolphin's wiki).
-  v0.2.0 uses DSP LLE by default (**Accurate audio** in the settings window), which costs about 5% speed.
+  The kit uses DSP LLE by default (**Accurate audio** in the settings window), which costs a few percent of speed.
 - Menus and the HUD are stretched in widescreen.
 
 ## How it works
@@ -135,9 +154,9 @@ GPL-3.0 (see `LICENSE`), like ModernGekko and DolRecomp. The runtime binaries in
 
 | Project | Commit | Local changes |
 |---|---|---|
-| [ExpansionPak/ModernGekko](https://github.com/ExpansionPak/ModernGekko) | `edd460a` | `patches/ModernGekko-edd460a.patch`: D3D11 backend option, speed in the title bar, PGO run fix, no mod-hook hash lookups when no mods are loaded, cached game-file hashes (start-up in seconds instead of minutes after the first run) |
-| [ExpansionPak/RecompCore](https://github.com/ExpansionPak/RecompCore) (Dolphin fork, `vendor/dolphin`) | `10f7ac4` | `patches/RecompCore-10f7ac4.patch`: `ppc_native_region_available` stub, command FIFO fields on separate cache lines (less CPU/GPU thread contention), a leaner gather-pipe write path for the game's graphics commands, game window: mouse kept in the window (LockCursor), F5/F9 quick save/load, Tab fast-forward, Esc no longer quits |
-| [ExpansionPak/DolRecomp](https://github.com/ExpansionPak/DolRecomp) (`vendor/dolphin/DolRecomp`) | `1bec355` | `patches/DolRecomp-1bec355.patch`: direct cross-chunk calls enabled, fast floating point, env defaults |
+| [ExpansionPak/ModernGekko](https://github.com/ExpansionPak/ModernGekko) | `edd460a` | `patches/ModernGekko-edd460a.patch`: D3D11 backend option, speed in the title bar, PGO run fix, no mod-hook hash lookups when no mods are loaded, cached game-file hashes (start-up in seconds instead of minutes after the first run), no mod host-call hooks when no mods are loaded, a shader compilation mode set in GFX.ini is kept |
+| [ExpansionPak/RecompCore](https://github.com/ExpansionPak/RecompCore) (Dolphin fork, `vendor/dolphin`) | `10f7ac4` | `patches/RecompCore-10f7ac4.patch`: `ppc_native_region_available` stub, command FIFO fields on separate cache lines (less CPU/GPU thread contention), a leaner gather-pipe write path for the game's graphics commands, game window: mouse kept in the window (LockCursor), F5/F9 quick save/load, Tab fast-forward, Esc no longer quits, real borderless fullscreen at start without the sunken window edge, `[DSP] DSPThread` honoured instead of chosen from the core count |
+| [ExpansionPak/DolRecomp](https://github.com/ExpansionPak/DolRecomp) (`vendor/dolphin/DolRecomp`) | `1bec355` | `patches/DolRecomp-1bec355.patch`: direct cross-chunk calls enabled, fast floating point, env defaults, sparse chunk entries (`DOLRECOMP_C_SPARSE_ENTRIES=1`) |
 
 These were built with Visual Studio 2026 (MSVC 14.51), Release with whole-program optimization
 (`-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON -DENABLE_LTO=ON`, plus `/wd5049`). The MSVC runtime DLLs are Microsoft's redistributables.

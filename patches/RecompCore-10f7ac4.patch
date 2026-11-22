@@ -19,6 +19,32 @@ index 345b9602dd..5a36cf7fcd 100644
  void ppc_system_call_exception(CPUState* cpu, u32 cia) {
      ppc_take_exception(cpu, PPC_EXC_SYSTEM_CALL, PPC_VECTOR_SYSTEM_CALL, cia + 4u, 0);
  }
+diff --git a/Source/Core/Core/Core.cpp b/Source/Core/Core/Core.cpp
+index e58579ecda..5d13300ee7 100644
+--- a/Source/Core/Core/Core.cpp
++++ b/Source/Core/Core/Core.cpp
+@@ -572,10 +572,17 @@ static void EmuThread(Core::System& system, std::unique_ptr<BootParameters> boot
+     return;
+   }
+ 
+-  if (cpu_info.HTT)
+-    Config::SetBaseOrCurrent(Config::MAIN_DSP_THREAD, cpu_info.num_cores > 4);
+-  else
+-    Config::SetBaseOrCurrent(Config::MAIN_DSP_THREAD, cpu_info.num_cores > 2);
++  // Local change: only pick the DSP thread automatically when no config file set it.
++  // Upstream overwrote [DSP] DSPThread from the core count on every boot, so the
++  // setting in Dolphin.ini never took effect.
++  if (Config::GetActiveLayerForConfig(Config::MAIN_DSP_THREAD) == Config::LayerType::Base &&
++      !Config::GetLayer(Config::LayerType::Base)->Exists(Config::MAIN_DSP_THREAD.GetLocation()))
++  {
++    if (cpu_info.HTT)
++      Config::SetBaseOrCurrent(Config::MAIN_DSP_THREAD, cpu_info.num_cores > 4);
++    else
++      Config::SetBaseOrCurrent(Config::MAIN_DSP_THREAD, cpu_info.num_cores > 2);
++  }
+ 
+   if (!system.GetDSP().GetDSPEmulator()->Initialize(system.IsWii(),
+                                                     Config::Get(Config::MAIN_DSP_THREAD)))
 diff --git a/Source/Core/Core/PowerPC/StaticRecomp/StaticRecompCore_Hooks.cpp b/Source/Core/Core/PowerPC/StaticRecomp/StaticRecompCore_Hooks.cpp
 index 7b3d845cee..1c84d94189 100644
 --- a/Source/Core/Core/PowerPC/StaticRecomp/StaticRecompCore_Hooks.cpp
@@ -64,7 +90,7 @@ index 7b3d845cee..1c84d94189 100644
    if (ea == 0)
      std::fprintf(stderr, "[zero-access] write size=%u guest_pc=%08x ppc_pc=%08x lr=%08x\n", size,
 diff --git a/Source/Core/DolphinNoGUI/PlatformWin32.cpp b/Source/Core/DolphinNoGUI/PlatformWin32.cpp
-index 3402fdae95..5a14d5146d 100644
+index 3402fdae95..453ed2ef03 100644
 --- a/Source/Core/DolphinNoGUI/PlatformWin32.cpp
 +++ b/Source/Core/DolphinNoGUI/PlatformWin32.cpp
 @@ -36,6 +36,7 @@ constexpr UINT ID_SAVE_STATE = 41001;
@@ -106,7 +132,18 @@ index 3402fdae95..5a14d5146d 100644
    if (m_hwnd)
      DestroyWindow(m_hwnd);
  }
-@@ -144,7 +155,8 @@ bool PlatformWin32::CreateMenus()
+@@ -120,7 +131,9 @@ bool PlatformWin32::RegisterRenderWindowClass()
+ 
+ bool PlatformWin32::CreateRenderWindow()
+ {
+-  m_hwnd = CreateWindowEx(WS_EX_CLIENTEDGE, WINDOW_CLASS_NAME, _T("Dolphin"), WS_OVERLAPPEDWINDOW,
++  // Local change: no WS_EX_CLIENTEDGE. Its sunken 3D edge stayed around the picture in
++  // fullscreen too (players saw a white/grey border).
++  m_hwnd = CreateWindowEx(0, WINDOW_CLASS_NAME, _T("Dolphin"), WS_OVERLAPPEDWINDOW,
+                           m_window_x < 0 ? CW_USEDEFAULT : m_window_x,
+                           m_window_y < 0 ? CW_USEDEFAULT : m_window_y, m_window_width,
+                           m_window_height, nullptr, nullptr, GetModuleHandle(nullptr), this);
+@@ -144,7 +157,8 @@ bool PlatformWin32::CreateMenus()
    if (!m_menu || !m_file_menu || !m_load_menu || !m_view_menu)
      return false;
  
@@ -116,7 +153,7 @@ index 3402fdae95..5a14d5146d 100644
    AppendMenuW(m_file_menu, MF_POPUP, reinterpret_cast<UINT_PTR>(m_load_menu), L"&Load State");
    AppendMenuW(m_file_menu, MF_SEPARATOR, 0, nullptr);
    // Checked state is refreshed from the core when the menu opens, so it cannot
-@@ -229,6 +241,55 @@ void PlatformWin32::SaveStateToStatesDirectory()
+@@ -229,6 +243,55 @@ void PlatformWin32::SaveStateToStatesDirectory()
    State::SaveAs(Core::System::GetInstance(), PathToString(path));
  }
  
@@ -172,7 +209,21 @@ index 3402fdae95..5a14d5146d 100644
  void PlatformWin32::ToggleFullscreen()
  {
    if (!m_fullscreen)
-@@ -291,6 +352,7 @@ void PlatformWin32::MainLoop()
+@@ -265,10 +328,12 @@ bool PlatformWin32::Init()
+   if (!RegisterRenderWindowClass() || !CreateRenderWindow() || !CreateMenus())
+     return false;
+ 
+-  // TODO: Enter fullscreen if enabled.
++  // Local change: actually start in (borderless) fullscreen when it is enabled; upstream
++  // left this as a TODO, so the "fullscreen" setting only ever gave a window.
+   if (Config::Get(Config::MAIN_FULLSCREEN))
+   {
+     ProcessEvents();
++    ToggleFullscreen();
+   }
+ 
+   if (Config::Get(Config::MAIN_DISABLE_SCREENSAVER))
+@@ -291,6 +356,7 @@ void PlatformWin32::MainLoop()
      Core::HostDispatchJobs(Core::System::GetInstance());
      ProcessEvents();
      UpdateWindowPosition();
@@ -180,7 +231,7 @@ index 3402fdae95..5a14d5146d 100644
  
      // TODO: Is this sleep appropriate?
      std::this_thread::sleep_for(std::chrono::milliseconds(1));
-@@ -364,36 +426,38 @@ LRESULT PlatformWin32::WndProc(const HWND hwnd, const UINT msg, const WPARAM wPa
+@@ -364,36 +430,38 @@ LRESULT PlatformWin32::WndProc(const HWND hwnd, const UINT msg, const WPARAM wPa
    break;
  
    case WM_KEYDOWN:
@@ -231,7 +282,7 @@ index 3402fdae95..5a14d5146d 100644
      {
        Config::SetCurrent(Config::MAIN_EMULATION_SPEED, 1.0f);
        return 0;
-@@ -401,9 +465,45 @@ LRESULT PlatformWin32::WndProc(const HWND hwnd, const UINT msg, const WPARAM wPa
+@@ -401,9 +469,45 @@ LRESULT PlatformWin32::WndProc(const HWND hwnd, const UINT msg, const WPARAM wPa
      break;
  
    case WM_KILLFOCUS:
@@ -278,7 +329,7 @@ index 3402fdae95..5a14d5146d 100644
      break;
  
    case WM_SYSKEYDOWN:
-@@ -429,6 +529,10 @@ LRESULT PlatformWin32::WndProc(const HWND hwnd, const UINT msg, const WPARAM wPa
+@@ -429,6 +533,10 @@ LRESULT PlatformWin32::WndProc(const HWND hwnd, const UINT msg, const WPARAM wPa
      {
        platform->SaveStateToStatesDirectory();
      }

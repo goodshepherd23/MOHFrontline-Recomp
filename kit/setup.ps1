@@ -203,8 +203,9 @@ New-Item -ItemType Directory -Force -Path $build | Out-Null
 Native { & robocopy.exe "$kit\module-src" $build /E /NFL /NDL /NJH /NJS /NP | Out-Null }
 if ($LASTEXITCODE -ge 8) { Fail 'Could not copy the module sources.' }
 $env:DOLRECOMP_SEMANTICS = 'fast'   # host floating point; see README
+$env:DOLRECOMP_C_SPARSE_ENTRIES = '1'   # chunk entry switch only at real entry points; see README
 $jobs = [Environment]::ProcessorCount
-Native { & "$runtime\dolrecomp.exe" "-j$jobs" --backend=c --cpu gekko --gamecube $dol $build 2>&1 | Select-String -Pattern 'chunks|direct|fast|error' | ForEach-Object { "$_" } }
+Native { & "$runtime\dolrecomp.exe" "-j$jobs" --backend=c --cpu gekko --gamecube $dol $build 2>&1 | Select-String -Pattern 'chunks|direct|fast|sparse|error' | ForEach-Object { "$_" } }
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath "$build\generated\generated.h")) { Fail 'DolRecomp failed.' }
 Copy-Item -LiteralPath $dol -Destination "$build\generated\main.dol" -Force
 

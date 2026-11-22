@@ -191,7 +191,7 @@ enum { ID_RES = 100, ID_BACKEND, ID_FULLSCREEN, ID_WIDE, ID_FPS, ID_SKIP, ID_PLA
 enum { CHOICE_QUIT, CHOICE_PLAY, CHOICE_DISC, CHOICE_REBUILD };
 
 static const wchar_t *res_values[] = { L"640x528", L"1280x1056", L"1920x1584", L"2560x2112" };
-static const wchar_t *res_names[] = { L"Native (640 x 528), fastest", L"2x (1280 x 1056)", L"3x (1920 x 1584)", L"4x (2560 x 2112)" };
+static const wchar_t *res_names[] = { L"Native (640 x 528), fastest", L"2x: sharp on a 1080p screen", L"3x: sharp on 1440p", L"4x: sharp on 4K (needs a strong GPU)" };
 static const wchar_t *backend_values[] = { L"D3D11", L"Vulkan", L"OpenGL" };
 static const wchar_t *backend_names[] = { L"Direct3D 11 (recommended)", L"Vulkan", L"OpenGL" };
 
@@ -490,7 +490,12 @@ static int play(const wchar_t *args) {
         if (WaitForSingleObject(pi.hProcess, 100) != WAIT_TIMEOUT) break;
         EnumWindows(find_window, 0);
     }
-    if (g_window) { ShowWindow(g_window, SW_MAXIMIZE); SetForegroundWindow(g_window); }
+    /* A fullscreen game window is already the size of the screen; maximizing it would shrink it
+     * to the work area (the taskbar showing through). */
+    if (g_window) {
+        if (!ini_bool(cfg_ini, L"Video", L"fullscreen", 0)) ShowWindow(g_window, SW_MAXIMIZE);
+        SetForegroundWindow(g_window);
+    }
     WaitForSingleObject(pi.hProcess, INFINITE);
 
     DWORD code = 1; GetExitCodeProcess(pi.hProcess, &code); CloseHandle(pi.hProcess);
@@ -539,5 +544,20 @@ int WINAPI wWinMain(HINSTANCE a, HINSTANCE b, PWSTR args, int show) {
     }
     if (!built_for_this_kit()) { fail(L"The game is not built yet. Choose your disc with Change disc."); return 1; }
     apply_mouse_look(mouse_sensitivity());
+    /* v0.2.4: run the audio DSP on the CPU thread. Dolphin used to choose a separate DSP thread
+     * itself on CPUs with more than 4 cores (ignoring this setting); with Accurate audio that made
+     * the CPU thread wait on, and wake, the DSP thread on every slice and every mailbox read.
+     * Inline measured 93% vs 73% in Mission 1 gameplay. The runtime now honours the setting.
+     * Done once, so a player who turns the thread back on in Dolphin.ini keeps it. */
+    if (!ini_bool(launcher_ini, L"Launcher", L"DspInline", 0)) {
+        WritePrivateProfileStringW(L"DSP", L"DSPThread", L"False", dolphin_ini);
+        WritePrivateProfileStringW(L"Launcher", L"DspInline", L"1", launcher_ini);
+    }
+    /* v0.2.4, also once: keep the sound's pitch when the game runs below full speed (it dropped
+     * in pitch before, which players heard as "terrible" sound). */
+    if (!ini_bool(launcher_ini, L"Launcher", L"Pitch024", 0)) {
+        WritePrivateProfileStringW(L"Core", L"AudioPreservePitch", L"True", dolphin_ini);
+        WritePrivateProfileStringW(L"Launcher", L"Pitch024", L"1", launcher_ini);
+    }
     return play(args);
 }

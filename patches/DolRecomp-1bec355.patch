@@ -18,10 +18,86 @@ index 63cd6cc..fcf92ff 100644
      for (int i = 1; i < argc; i++) {
          const char* arg = argv[i];
 diff --git a/src/app/pipeline.c b/src/app/pipeline.c
-index 512d020..415ff41 100644
+index 512d020..a3323b1 100644
 --- a/src/app/pipeline.c
 +++ b/src/app/pipeline.c
-@@ -1254,6 +1254,40 @@ int emit_code_sections_split(const LoadedCodeSection* sections,
+@@ -1141,6 +1141,75 @@ fail:
+ }
+ #endif
+ 
++// Sparse entries (local change, DOLRECOMP_C_SPARSE_ENTRIES=1): code addresses
++// found as 32-bit words in the container's data sections (vtables, callbacks,
++// jump tables), set by emit_dol_split before the C path runs.
++static u32* g_data_code_pointers = NULL;
++static u32 g_data_code_pointer_count = 0;
++
++static int c_code_address(const LoadedCodeSection* sections, u32 section_count,
++                          u32 address) {
++    for (u32 i = 0; i < section_count; i++) {
++        const LoadedCodeSection* section = &sections[i];
++        if (section->data && address >= section->address &&
++            address < section->address + section->size &&
++            ((address - section->address) & 3u) == 0)
++            return 1;
++    }
++    return 0;
++}
++
++static int compare_entry_u32(const void* left, const void* right) {
++    u32 a = *(const u32*)left;
++    u32 b = *(const u32*)right;
++    return a < b ? -1 : a > b;
++}
++
++// Program entry, symbols, every direct branch target in code, plus the data
++// pointers above; sorted and unique. Same set as the LLVM backend's entry
++// points, plus the data pointers.
++static u32* collect_c_entry_points(const LoadedCodeSection* sections,
++                                   u32 section_count, u32 program_entry,
++                                   const DolRecompSymbolMap* symbols,
++                                   u32* result_count) {
++    size_t capacity = 1u + (symbols ? symbols->count : 0u) + g_data_code_pointer_count;
++    for (u32 i = 0; i < section_count; i++)
++        capacity += sections[i].size / 4u;
++    u32* points = (u32*)malloc(capacity * sizeof(*points));
++    if (!points)
++        return NULL;
++    u32 count = 0;
++    if (c_code_address(sections, section_count, program_entry))
++        points[count++] = program_entry;
++    if (symbols) {
++        for (u32 i = 0; i < symbols->count; i++) {
++            u32 address = symbols->symbols[i].address;
++            if (c_code_address(sections, section_count, address))
++                points[count++] = address;
++        }
++    }
++    for (u32 i = 0; i < g_data_code_pointer_count; i++)
++        if (c_code_address(sections, section_count, g_data_code_pointers[i]))
++            points[count++] = g_data_code_pointers[i];
++    for (u32 s = 0; s < section_count; s++) {
++        const LoadedCodeSection* section = &sections[s];
++        for (u32 offset = 0; section->data && offset + 4u <= section->size; offset += 4u) {
++            PPCInst inst = ppc_decode(read_be32(section->data + offset),
++                                      section->address + offset);
++            if ((inst.op == PPC_OP_B || inst.op == PPC_OP_BC) &&
++                c_code_address(sections, section_count, inst.branch_target))
++                points[count++] = inst.branch_target;
++        }
++    }
++    qsort(points, count, sizeof(*points), compare_entry_u32);
++    u32 unique = 0;
++    for (u32 i = 0; i < count; i++)
++        if (!unique || points[i] != points[unique - 1u])
++            points[unique++] = points[i];
++    *result_count = unique;
++    return points;
++}
++
+ int emit_code_sections_split(const LoadedCodeSection* sections,
+                                     u32 section_count,
+                                     const char* output_path,
+@@ -1254,6 +1323,49 @@ int emit_code_sections_split(const LoadedCodeSection* sections,
      FunctionList funcs = {0};
      SMCAnalysis smc = {0};
  
@@ -53,6 +129,15 @@ index 512d020..415ff41 100644
 +        }
 +        emit_set_chunk_table(chunk_table, chunk_table_count);
 +        emit_set_fast_fp(options->fast_semantics);
++        const char* sparse = getenv("DOLRECOMP_C_SPARSE_ENTRIES");
++        if (sparse && sparse[0] == '1') {
++            u32 entry_count = 0;
++            u32* entries = collect_c_entry_points(sections, section_count, entry_point,
++                                                  symbols, &entry_count);
++            emit_set_entry_points(entries, entries ? entry_count : 0);
++            printf("sparse chunk entries: on (%u program-wide entry points, %u from data)\n",
++                   entries ? entry_count : 0, g_data_code_pointer_count);
++        }
 +        if (options->fast_semantics)
 +            printf("fast floating point: on (host FP, no FPSCR status)\n");
 +        printf("direct cross-chunk calls: %s (%u chunks)\n",
@@ -62,11 +147,40 @@ index 512d020..415ff41 100644
      for (u32 s = 0; s < section_count; s++) {
          const LoadedCodeSection* section = &sections[s];
          if (section->size == 0 || !section->data) continue;
+@@ -1488,6 +1600,28 @@ int emit_dol_split(const DOLFile* dol, const char* output_path,
+         section->embedded_data_mode = EMBEDDED_DATA_DOL;
+     }
+ 
++    // Sparse entries: every aligned big-endian word in a data section that
++    // points into code is a possible indirect target (vtable, callback, jump
++    // table). False positives only add a switch case.
++    const char* sparse = getenv("DOLRECOMP_C_SPARSE_ENTRIES");
++    if (sparse && sparse[0] == '1') {
++        size_t words = 0;
++        for (u32 i = 0; i < DOL_NUM_DATA; i++)
++            words += dol->header.data_sizes[i] / 4u;
++        g_data_code_pointers = (u32*)malloc((words ? words : 1u) * sizeof(u32));
++        g_data_code_pointer_count = 0;
++        for (u32 i = 0; g_data_code_pointers && i < DOL_NUM_DATA; i++) {
++            const u8* data = dol->header.data_sizes[i] ? dol_get_data_section(dol, (int)i) : NULL;
++            if (!data)
++                continue;
++            for (u32 offset = 0; offset + 4u <= dol->header.data_sizes[i]; offset += 4u) {
++                u32 value = read_be32(data + offset);
++                if (c_code_address(sections, section_count, value))
++                    g_data_code_pointers[g_data_code_pointer_count++] = value;
++            }
++        }
++    }
++
+     return emit_code_sections_split(sections, section_count, output_path, cpu,
+                                     dol->header.entry_point, jobs,
+                                     local_chunks_dir, symbols, options);
 diff --git a/src/backend/emitter.c b/src/backend/emitter.c
-index 45c3286..1f1733c 100644
+index 45c3286..2943e73 100644
 --- a/src/backend/emitter.c
 +++ b/src/backend/emitter.c
-@@ -323,6 +323,91 @@ void emit_set_chunk_table(const u32* starts, u32 count) {
+@@ -323,6 +323,120 @@ void emit_set_chunk_table(const u32* starts, u32 count) {
      g_chunk_count = count ? count : 0;
  }
  
@@ -78,6 +192,35 @@ index 45c3286..1f1733c 100644
 +
 +void emit_set_fast_fp(int enabled) {
 +    g_fast_fp = enabled != 0;
++}
++
++// Sparse entries (DOLRECOMP_C_SPARSE_ENTRIES=1, local change): program-wide
++// addresses execution can be dispatched to (program entry, symbols, every direct
++// branch target, code pointers found in data), sorted. When set, a chunk's
++// entry switch only gets cases for these plus its own block leaders and return
++// addresses instead of every instruction. With fewer ways into the middle of a
++// block, clang can keep guest values in registers across instructions. Any
++// other address still works: it runs one instruction through the interpreter
++// (ppc_fallback_instruction) and dispatches again, as the LLVM backend's
++// cold-entry path does. Written once before the worker pool starts.
++static const u32* g_entry_points = NULL;
++static u32 g_entry_point_count = 0;
++
++void emit_set_entry_points(const u32* points, u32 count) {
++    g_entry_points = count ? points : NULL;
++    g_entry_point_count = count;
++}
++
++static bool is_global_entry(u32 address) {
++    u32 lo = 0, hi = g_entry_point_count;
++    while (lo < hi) {
++        u32 mid = lo + (hi - lo) / 2u;
++        if (g_entry_points[mid] < address)
++            lo = mid + 1u;
++        else
++            hi = mid;
++    }
++    return lo < g_entry_point_count && g_entry_points[lo] == address;
 +}
 +
 +// Emits the fast form of an arithmetic FP op; false means "use the exact helper".
@@ -158,7 +301,7 @@ index 45c3286..1f1733c 100644
  // The chunk whose func_<start>() covers `addr`, or 0 if none does. Chunks tile
  // the text sections but the first one does not start on the common stride, so
  // this binary-searches rather than dividing.
-@@ -624,6 +709,11 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
+@@ -624,6 +738,11 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
      if (ppc_op_uses_fpu(inst->op))
          fprintf(out, "    if (!ppc_fp_available_inline(ctx, 0x%08Xu)) return;\n", inst->address);
  
@@ -170,15 +313,54 @@ index 45c3286..1f1733c 100644
      switch (inst->op) {
      case PPC_OP_MULLI:
          fprintf(out, "    ctx->gpr[%u] = (u32)((s64)(s32)ctx->gpr[%u] * (s64)(s32)%d);\n",
+@@ -1920,13 +2039,36 @@ bool emit_function(FILE* out, const PPCInst* insts, u32 count, u32 func_addr) {
+                               cfg.loop_ends[i]);
+     }
+ 
++    const bool sparse = g_entry_points != NULL;
++    if (sparse) {
++        // Raw words for the cold-entry path (see emit_set_entry_points).
++        fprintf(out, "static const u32 raw_%08X[%u] = {", func_addr, count);
++        for (u32 i = 0; i < count; i++)
++            fprintf(out, "%s0x%08Xu", i == 0 ? "\n    " : (i % 8u) ? ", " : ",\n    ",
++                    insts[i].raw);
++        fprintf(out, "\n};\n\n");
++    }
++
+     fprintf(out, "void func_%08X(CPUState* ctx) {\n", func_addr);
+     fprintf(out, "    switch (ctx->pc) {\n");
+     for (u32 i = 0; i < count; i++) {
++        if (sparse && i != 0 && !cfg.leaders[i] && !cfg.return_targets[i] &&
++            !is_global_entry(insts[i].address))
++            continue;
+         fprintf(out, "    case 0x%08Xu: goto label_%08X;\n",
+                 insts[i].address, insts[i].address);
+     }
+-    fprintf(out, "    default: return;\n");
++    if (sparse) {
++        fprintf(out, "    default:\n");
++        fprintf(out, "        if (ctx->pc - 0x%08Xu < 0x%08Xu && (ctx->pc & 3u) == 0) {\n",
++                func_addr, count * 4u);
++        fprintf(out, "            ppc_fallback_instruction(ctx, raw_%08X[(ctx->pc - 0x%08Xu) >> 2], ctx->pc);\n",
++                func_addr, func_addr);
++        fprintf(out, "        }\n");
++        fprintf(out, "        return;\n");
++    } else {
++        fprintf(out, "    default: return;\n");
++    }
+     fprintf(out, "    }\n");
+ 
+     for (u32 i = 0; i < count; i++) {
 diff --git a/src/backend/emitter.h b/src/backend/emitter.h
-index 39d8f3c..88d5a56 100644
+index 39d8f3c..ffc20ea 100644
 --- a/src/backend/emitter.h
 +++ b/src/backend/emitter.h
-@@ -22,6 +22,7 @@ void emit_header_for_cpu(FILE* out, DolRecompCPU cpu);
+@@ -22,6 +22,8 @@ void emit_header_for_cpu(FILE* out, DolRecompCPU cpu);
  // runtime that validates mutable guest code there. Call before worker emission;
  // passing count == 0 restores the safe return-to-chassis form.
  void emit_set_chunk_table(const u32* starts, u32 count);
 +void emit_set_fast_fp(int enabled);
++void emit_set_entry_points(const u32* points, u32 count);
  
  // emit a single recompiled function as C code
  bool emit_function(FILE* out, const PPCInst* insts, u32 count, u32 func_addr);

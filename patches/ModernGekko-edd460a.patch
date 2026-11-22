@@ -1,5 +1,5 @@
 diff --git a/src/runtime/dolphin_runtime.cpp b/src/runtime/dolphin_runtime.cpp
-index f9b5405..4c763e2 100644
+index f9b5405..6028446 100644
 --- a/src/runtime/dolphin_runtime.cpp
 +++ b/src/runtime/dolphin_runtime.cpp
 @@ -65,7 +65,11 @@ std::string FormatWindowTitle(const std::string &title, double fps) {
@@ -15,6 +15,47 @@ index f9b5405..4c763e2 100644
    const NetPlay::InputWaitTelemetry telemetry =
        NetPlay::NetPlayClient::GetInputWaitTelemetry();
    if (!telemetry.active) {
+@@ -666,8 +670,14 @@ RuntimeCreateResult Runtime::Create(RuntimeConfig config) {
+     Config::SetBase(Config::GFX_EFB_SCALE,
+                     *impl->config.graphics.internal_resolution_scale);
+   Config::SetBase(Config::GFX_SHADER_CACHE, true);
+-  Config::SetBase(Config::GFX_SHADER_COMPILATION_MODE,
+-                  ShaderCompilationMode::AsynchronousUberShaders);
++  // Local change: keep a shader compilation mode set in GFX.ini (or a game INI);
++  // otherwise use asynchronous ubershaders as before.
++  if (Config::GetActiveLayerForConfig(Config::GFX_SHADER_COMPILATION_MODE) ==
++          Config::LayerType::Base &&
++      !Config::GetLayer(Config::LayerType::Base)
++           ->Exists(Config::GFX_SHADER_COMPILATION_MODE.GetLocation()))
++    Config::SetBase(Config::GFX_SHADER_COMPILATION_MODE,
++                    ShaderCompilationMode::AsynchronousUberShaders);
+   Config::SetBase(Config::GFX_WAIT_FOR_SHADERS_BEFORE_STARTING, true);
+   const std::vector<std::string> audio_backends =
+       AudioCommon::GetSoundBackends();
+@@ -700,11 +710,18 @@ RuntimeCreateResult Runtime::Create(RuntimeConfig config) {
+     recomp_source = StaticRecompModuleSource::Attached(
+         reinterpret_cast<const StaticRecompModuleDesc *>(
+             impl->config.module.descriptor));
+-  recomp_source.host_call = &ModManager::HostCall;
+-  recomp_source.host_call_contains = &ModManager::HostCallContains;
+-  recomp_source.host_call_range_contains =
+-      &ModManager::HostCallRangeContains;
+-  recomp_source.host_call_user = impl->mods.get();
++  // Local change: hooks and patches are only added while mods load (and pending
++  // returns only come from hooks), so with nothing to intercept leave the
++  // host-call callbacks unset. Otherwise every indirect branch in the
++  // recompiled game made two cross-module calls just to learn "no mod here".
++  if (impl->mods->HasGuestInterception())
++  {
++    recomp_source.host_call = &ModManager::HostCall;
++    recomp_source.host_call_contains = &ModManager::HostCallContains;
++    recomp_source.host_call_range_contains =
++        &ModManager::HostCallRangeContains;
++    recomp_source.host_call_user = impl->mods.get();
++  }
+   jit.SetStaticRecompModuleSource(std::move(recomp_source));
+ 
+   s_runtime_active = true;
 diff --git a/src/runtime/game.cpp b/src/runtime/game.cpp
 index 85860a5..2f977d0 100644
 --- a/src/runtime/game.cpp
