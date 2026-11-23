@@ -230,7 +230,7 @@ static void load_settings(HWND w) {
     check(w, ID_FULLSCREEN, ini_bool(cfg_ini, L"Video", L"fullscreen", 0));
     check(w, ID_FPS, ini_bool(cfg_ini, L"Video", L"show_fps_in_title", 1));
     ini_get(gfx_ini, L"Settings", L"AspectRatio", L"1", v, 64);
-    check(w, ID_WIDE, wcscmp(v, L"0") != 0 && ini_bool(gfx_ini, L"Settings", L"wideScreenHack", 1));
+    check(w, ID_WIDE, wcscmp(v, L"0") != 0);   /* v0.2.5: widescreen is the game's own (Hor+), see play() */
     check(w, ID_SKIP, ini_bool(launcher_ini, L"Launcher", L"SkipSettings", 0));
     /* Accurate audio = Dolphin's DSP LLE; HLE drops sound effects in this game. */
     check(w, ID_AUDIO, !ini_bool(game_ini, L"Core", L"DSPHLE", 0));
@@ -247,7 +247,7 @@ static void save_settings(HWND w) {
     WritePrivateProfileStringW(L"Video", L"show_fps_in_title", checked(w, ID_FPS) ? L"true" : L"false", cfg_ini);
     int wide = checked(w, ID_WIDE);
     WritePrivateProfileStringW(L"Settings", L"AspectRatio", wide ? L"1" : L"0", gfx_ini);
-    WritePrivateProfileStringW(L"Settings", L"wideScreenHack", wide ? L"True" : L"False", gfx_ini);
+    WritePrivateProfileStringW(L"Settings", L"wideScreenHack", L"False", gfx_ini);
     WritePrivateProfileStringW(L"Launcher", L"SkipSettings", checked(w, ID_SKIP) ? L"1" : L"0", launcher_ini);
     WritePrivateProfileStringW(L"Core", L"DSPHLE", checked(w, ID_AUDIO) ? L"False" : L"True", game_ini);
     wchar_t sens[8]; swprintf(sens, 8, L"%d", (int)SendDlgItemMessageW(w, ID_MOUSE, TBM_GETPOS, 0, 0));
@@ -474,6 +474,16 @@ static int play(const wchar_t *args) {
         si.dwFlags = STARTF_USESTDHANDLES; si.hStdOutput = out; si.hStdError = out; si.hStdInput = in;
     }
     /* The runtime's DLLs (MSVC runtime, the time-zone shim) sit beside it, where Windows looks first. */
+    /* Widescreen (v0.2.5): the recompiled game widens its own camera, horizontally (Hor+), when
+     * MOHF_WIDESCREEN=1 (kit\inject.txt), and Dolphin only shows the picture at 16:9. Dolphin's
+     * widescreen hack stays off: it widened the picture without the game knowing, so the game kept
+     * culling everything outside its 4:3 view and objects near the sides popped in and out. */
+    {
+        wchar_t ar[16]; ini_get(gfx_ini, L"Settings", L"AspectRatio", L"1", ar, 16);
+        const int wide = wcscmp(ar, L"0") != 0;
+        WritePrivateProfileStringW(L"Settings", L"wideScreenHack", L"False", gfx_ini);
+        SetEnvironmentVariableW(L"MOHF_WIDESCREEN", wide ? L"1" : NULL);
+    }
     BOOL ok = CreateProcessW(exe, cmd, NULL, NULL, TRUE, CREATE_NO_WINDOW | CREATE_SUSPENDED, NULL, dir, &si, &pi);
     if (out != INVALID_HANDLE_VALUE) CloseHandle(out);
     if (in != INVALID_HANDLE_VALUE) CloseHandle(in);

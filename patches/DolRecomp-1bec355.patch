@@ -18,7 +18,7 @@ index 63cd6cc..fcf92ff 100644
      for (int i = 1; i < argc; i++) {
          const char* arg = argv[i];
 diff --git a/src/app/pipeline.c b/src/app/pipeline.c
-index 512d020..a3323b1 100644
+index 512d020..c7c758f 100644
 --- a/src/app/pipeline.c
 +++ b/src/app/pipeline.c
 @@ -1141,6 +1141,75 @@ fail:
@@ -97,7 +97,7 @@ index 512d020..a3323b1 100644
  int emit_code_sections_split(const LoadedCodeSection* sections,
                                      u32 section_count,
                                      const char* output_path,
-@@ -1254,6 +1323,49 @@ int emit_code_sections_split(const LoadedCodeSection* sections,
+@@ -1254,6 +1323,51 @@ int emit_code_sections_split(const LoadedCodeSection* sections,
      FunctionList funcs = {0};
      SMCAnalysis smc = {0};
  
@@ -129,6 +129,8 @@ index 512d020..a3323b1 100644
 +        }
 +        emit_set_chunk_table(chunk_table, chunk_table_count);
 +        emit_set_fast_fp(options->fast_semantics);
++        if (!emit_load_injections())
++            return 0;
 +        const char* sparse = getenv("DOLRECOMP_C_SPARSE_ENTRIES");
 +        if (sparse && sparse[0] == '1') {
 +            u32 entry_count = 0;
@@ -147,7 +149,7 @@ index 512d020..a3323b1 100644
      for (u32 s = 0; s < section_count; s++) {
          const LoadedCodeSection* section = &sections[s];
          if (section->size == 0 || !section->data) continue;
-@@ -1488,6 +1600,28 @@ int emit_dol_split(const DOLFile* dol, const char* output_path,
+@@ -1488,6 +1602,28 @@ int emit_dol_split(const DOLFile* dol, const char* output_path,
          section->embedded_data_mode = EMBEDDED_DATA_DOL;
      }
  
@@ -177,10 +179,20 @@ index 512d020..a3323b1 100644
                                      dol->header.entry_point, jobs,
                                      local_chunks_dir, symbols, options);
 diff --git a/src/backend/emitter.c b/src/backend/emitter.c
-index 45c3286..2943e73 100644
+index 45c3286..54584eb 100644
 --- a/src/backend/emitter.c
 +++ b/src/backend/emitter.c
-@@ -323,6 +323,120 @@ void emit_set_chunk_table(const u32* starts, u32 count) {
+@@ -3,6 +3,9 @@
+ 
+ #include "emitter.h"
+ #include "backend/c_cfg.h"
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
+ 
+ static u32 cr_field_shift(u8 crf) {
+     return 4u * (7u - (u32)crf);
+@@ -323,6 +326,166 @@ void emit_set_chunk_table(const u32* starts, u32 count) {
      g_chunk_count = count ? count : 0;
  }
  
@@ -209,6 +221,52 @@ index 45c3286..2943e73 100644
 +void emit_set_entry_points(const u32* points, u32 count) {
 +    g_entry_points = count ? points : NULL;
 +    g_entry_point_count = count;
++}
++
++// C injections (local change, DOLRECOMP_C_INJECT=<file>): each line of the file is
++// "<hex guest address> <C statement>"; the statement is emitted just before that guest
++// instruction's code. Used for game-specific fixes that a static recompile can't take as a
++// run-time code patch (MOH Frontline's Hor+ widescreen). Loaded once before the workers start.
++#define MAX_INJECTIONS 64
++static u32 g_inject_addr[MAX_INJECTIONS];
++static char* g_inject_code[MAX_INJECTIONS];
++static u32 g_inject_count = 0;
++
++int emit_load_injections(void) {
++    const char* path = getenv("DOLRECOMP_C_INJECT");
++    if (!path || !path[0])
++        return 1;
++    FILE* f = fopen(path, "r");
++    if (!f) {
++        fprintf(stderr, "error: can't open DOLRECOMP_C_INJECT file '%s'\n", path);
++        return 0;
++    }
++    char line[2048];
++    while (fgets(line, sizeof(line), f) && g_inject_count < MAX_INJECTIONS) {
++        char* end = NULL;
++        unsigned long addr = strtoul(line, &end, 16);
++        if (end == line || line[0] == '#')
++            continue;
++        while (*end == ' ' || *end == '\t')
++            end++;
++        size_t n = strlen(end);
++        while (n && (end[n - 1] == '\n' || end[n - 1] == '\r'))
++            end[--n] = 0;
++        if (!n)
++            continue;
++        g_inject_addr[g_inject_count] = (u32)addr;
++        g_inject_code[g_inject_count] = strdup(end);
++        g_inject_count++;
++    }
++    fclose(f);
++    printf("C injections: %u from %s\n", g_inject_count, path);
++    return 1;
++}
++
++static void emit_injection(FILE* out, u32 address) {
++    for (u32 k = 0; k < g_inject_count; k++)
++        if (g_inject_addr[k] == address)
++            fprintf(out, "    /* injected (DOLRECOMP_C_INJECT) */ %s\n", g_inject_code[k]);
 +}
 +
 +static bool is_global_entry(u32 address) {
@@ -301,7 +359,7 @@ index 45c3286..2943e73 100644
  // The chunk whose func_<start>() covers `addr`, or 0 if none does. Chunks tile
  // the text sections but the first one does not start on the common stride, so
  // this binary-searches rather than dividing.
-@@ -624,6 +738,11 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
+@@ -624,6 +787,11 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
      if (ppc_op_uses_fpu(inst->op))
          fprintf(out, "    if (!ppc_fp_available_inline(ctx, 0x%08Xu)) return;\n", inst->address);
  
@@ -313,7 +371,15 @@ index 45c3286..2943e73 100644
      switch (inst->op) {
      case PPC_OP_MULLI:
          fprintf(out, "    ctx->gpr[%u] = (u32)((s64)(s32)ctx->gpr[%u] * (s64)(s32)%d);\n",
-@@ -1920,13 +2039,36 @@ bool emit_function(FILE* out, const PPCInst* insts, u32 count, u32 func_addr) {
+@@ -1893,6 +2061,7 @@ static void emit_counted_loop(FILE* out, const PPCInst* insts,
+     for (u32 i = first; i <= last; ++i) {
+         if (cfg->materialize_pc[i])
+             fprintf(out, "    ctx->pc = 0x%08Xu;\n", insts[i].address);
++        emit_injection(out, insts[i].address);
+         emit_instruction_with_range(out, &insts[i], function_address,
+                                     function_end, i == last, false);
+     }
+@@ -1920,13 +2089,36 @@ bool emit_function(FILE* out, const PPCInst* insts, u32 count, u32 func_addr) {
                                cfg.loop_ends[i]);
      }
  
@@ -351,16 +417,25 @@ index 45c3286..2943e73 100644
      fprintf(out, "    }\n");
  
      for (u32 i = 0; i < count; i++) {
+@@ -1945,6 +2137,7 @@ bool emit_function(FILE* out, const PPCInst* insts, u32 count, u32 func_addr) {
+             fprintf(out, "    ctx->pc = 0x%08Xu;\n", insts[i].address);
+         if (cfg.leaders[i] && cfg.block_cycles[i] != 0)
+             fprintf(out, "    ctx->downcount -= %u;\n", cfg.block_cycles[i]);
++        emit_injection(out, insts[i].address);
+         emit_instruction_with_range(
+             out, &insts[i], func_addr, func_end,
+             c_function_cfg_can_loop_directly(&cfg, insts, func_addr, i),
 diff --git a/src/backend/emitter.h b/src/backend/emitter.h
-index 39d8f3c..ffc20ea 100644
+index 39d8f3c..55c2cfa 100644
 --- a/src/backend/emitter.h
 +++ b/src/backend/emitter.h
-@@ -22,6 +22,8 @@ void emit_header_for_cpu(FILE* out, DolRecompCPU cpu);
+@@ -22,6 +22,9 @@ void emit_header_for_cpu(FILE* out, DolRecompCPU cpu);
  // runtime that validates mutable guest code there. Call before worker emission;
  // passing count == 0 restores the safe return-to-chassis form.
  void emit_set_chunk_table(const u32* starts, u32 count);
 +void emit_set_fast_fp(int enabled);
 +void emit_set_entry_points(const u32* points, u32 count);
++int emit_load_injections(void);
  
  // emit a single recompiled function as C code
  bool emit_function(FILE* out, const PPCInst* insts, u32 count, u32 func_addr);

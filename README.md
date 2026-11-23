@@ -101,9 +101,12 @@ four mouse-look lines, and only while they still use the mouse, so your own rema
 
 ### Widescreen
 
-The kit turns on Dolphin's widescreen hack, so the 3D view is a true 16:9 picture. Menus and the HUD come out
-stretched sideways, which the hack can't avoid. Untick **Widescreen** in the settings window for the original
-4:3 picture.
+Widescreen is the game's own: the recompiled game widens its camera's horizontal view (Hor+) and Dolphin shows the
+picture at 16:9. Because the game itself knows the view is wider, it also draws everything at the sides. Until
+v0.2.4 the kit used Dolphin's widescreen hack instead, which widened the picture without the game knowing, so the
+game kept culling objects outside its old 4:3 view and they popped in and out at the edges. The fix lives in
+`kit\inject.txt`. Menus and the HUD still come out stretched sideways. Untick **Widescreen** in the settings
+window for the original 4:3 picture.
 
 ## Performance
 
@@ -170,7 +173,7 @@ GPL-3.0 (see `LICENSE`), like ModernGekko and DolRecomp. The runtime binaries in
 |---|---|---|
 | [ExpansionPak/ModernGekko](https://github.com/ExpansionPak/ModernGekko) | `edd460a` | `patches/ModernGekko-edd460a.patch`: D3D11 backend option, speed in the title bar, PGO run fix, no mod-hook hash lookups when no mods are loaded, cached game-file hashes (start-up in seconds instead of minutes after the first run), no mod host-call hooks when no mods are loaded, a shader compilation mode set in GFX.ini is kept |
 | [ExpansionPak/RecompCore](https://github.com/ExpansionPak/RecompCore) (Dolphin fork, `vendor/dolphin`) | `10f7ac4` | `patches/RecompCore-10f7ac4.patch`: `ppc_native_region_available` stub, command FIFO fields on separate cache lines (less CPU/GPU thread contention), a leaner gather-pipe write path for the game's graphics commands, game window: mouse kept in the window (LockCursor), F5/F9 quick save/load, Tab fast-forward, Esc no longer quits, real borderless fullscreen at start without the sunken window edge, `[DSP] DSPThread` honoured instead of chosen from the core count |
-| [ExpansionPak/DolRecomp](https://github.com/ExpansionPak/DolRecomp) (`vendor/dolphin/DolRecomp`) | `1bec355` | `patches/DolRecomp-1bec355.patch`: direct cross-chunk calls enabled, fast floating point, env defaults, sparse chunk entries (`DOLRECOMP_C_SPARSE_ENTRIES=1`) |
+| [ExpansionPak/DolRecomp](https://github.com/ExpansionPak/DolRecomp) (`vendor/dolphin/DolRecomp`) | `1bec355` | `patches/DolRecomp-1bec355.patch`: direct cross-chunk calls enabled, fast floating point, env defaults, sparse chunk entries (`DOLRECOMP_C_SPARSE_ENTRIES=1`), C injections at guest addresses (`DOLRECOMP_C_INJECT`, used for widescreen) |
 
 These were built with Visual Studio 2026 (MSVC 14.51), Release with whole-program optimization
 (`-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON -DENABLE_LTO=ON`, plus `/wd5049`). The MSVC runtime DLLs are Microsoft's redistributables.

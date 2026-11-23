@@ -204,8 +204,10 @@ Native { & robocopy.exe "$kit\module-src" $build /E /NFL /NDL /NJH /NJS /NP | Ou
 if ($LASTEXITCODE -ge 8) { Fail 'Could not copy the module sources.' }
 $env:DOLRECOMP_SEMANTICS = 'fast'   # host floating point; see README
 $env:DOLRECOMP_C_SPARSE_ENTRIES = '1'   # chunk entry switch only at real entry points; see README
+$env:DOLRECOMP_C_CHUNK_INSTRUCTIONS = '1024'   # smaller chunks: about half the compile time, same speed
+$env:DOLRECOMP_C_INJECT = "$kit\inject.txt"   # game-specific fixes (Hor+ widescreen); see kit\inject.txt
 $jobs = [Environment]::ProcessorCount
-Native { & "$runtime\dolrecomp.exe" "-j$jobs" --backend=c --cpu gekko --gamecube $dol $build 2>&1 | Select-String -Pattern 'chunks|direct|fast|sparse|error' | ForEach-Object { "$_" } }
+Native { & "$runtime\dolrecomp.exe" "-j$jobs" --backend=c --cpu gekko --gamecube $dol $build 2>&1 | Select-String -Pattern 'chunks|direct|fast|sparse|inject|error' | ForEach-Object { "$_" } }
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath "$build\generated\generated.h")) { Fail 'DolRecomp failed.' }
 Copy-Item -LiteralPath $dol -Destination "$build\generated\main.dol" -Force
 

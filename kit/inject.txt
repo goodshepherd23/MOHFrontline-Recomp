@@ -1,0 +1,10 @@
+# C statements DolRecomp inserts before a guest instruction (DOLRECOMP_C_INJECT). Format:
+#   <hex address> <one C statement>
+#
+# Hor+ widescreen. CCamera::SetPerspective(this, f1, f2) at 0x80079E7C stores tan(f1) and tan(f2),
+# the horizontal and vertical half-angle tangents that both the projection and the view frustum
+# (object culling) use. With MOHF_WIDESCREEN=1 (set by the launcher's Widescreen box) the
+# horizontal tangent is widened by 16:9 / 4:3, so the game itself draws and culls a wider view and
+# Dolphin only has to show the picture at 16:9. Dolphin's widescreen hack widened the picture
+# without the game knowing, so objects near the left and right edges were culled and popped.
+80079E7C { static int dr_ws = -1; if (dr_ws < 0) { extern char* getenv(const char*); const char* e = getenv("MOHF_WIDESCREEN"); dr_ws = e && e[0] == '1'; } if (dr_ws) ctx->fpr[1] = atan(tan(ctx->fpr[1]) * (4.0 / 3.0)); }
